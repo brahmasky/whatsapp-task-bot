@@ -1,5 +1,6 @@
 import { TPGService } from './tpg.service.js';
 import { getStoredPassword, storePassword } from './keychain.service.js';
+import { isEmailConfigured, sendEmailWithAttachment } from '../../utils/email.service.js';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 
@@ -254,7 +255,23 @@ export default {
 
       await ctx.sendDocument(pdfPath, filename, 'application/pdf', caption);
 
-      await ctx.reply(`Invoice ${invoiceInfo.invoiceNumber} sent successfully!`);
+      // Send via email if configured
+      if (isEmailConfigured()) {
+        try {
+          await sendEmailWithAttachment({
+            subject: `TPG Invoice for ${monthName} ${year}`,
+            text: `Please find attached your TPG invoice.\n\nInvoice: ${invoiceInfo.invoiceNumber}\nPeriod: ${monthName} ${year}\nAmount: $${invoiceInfo.amount.toFixed(2)}`,
+            attachmentPath: pdfPath,
+            attachmentFilename: filename,
+          });
+          await ctx.reply(`Invoice ${invoiceInfo.invoiceNumber} sent via WhatsApp and email!`);
+        } catch (emailError) {
+          logger.error('Error sending email:', { error: emailError.message });
+          await ctx.reply(`Invoice sent via WhatsApp. Email failed: ${emailError.message}`);
+        }
+      } else {
+        await ctx.reply(`Invoice ${invoiceInfo.invoiceNumber} sent successfully!`);
+      }
 
       // Cleanup
       await this.cleanup(ctx);

@@ -59,6 +59,17 @@ WhatsApp Messages → MessageRouter → TaskRegistry → Task Handlers
 - **First run requires QR scan** - session stored in `.baileys_auth/`
 - **Authorization** - only self-messages or users in `ALLOWED_USERS` env var
 
+## Utilities
+
+**Email Service (`src/utils/email.service.js`):**
+- Gmail SMTP integration via nodemailer
+- `isEmailConfigured()` - check if email env vars are set
+- `sendEmailWithAttachment({ to, subject, text, attachmentPath, attachmentFilename })` - send email with file
+
 ## Environment Variables
 
-See `.env.example`. Key vars: `ALLOWED_USERS` (comma-separated phone numbers), `HEADLESS` (browser mode), `SMS_TIMEOUT_MINUTES`.
+See `.env.example`. Key vars:
+- `ALLOWED_USERS` - comma-separated phone numbers
+- `HEADLESS` - browser mode for Playwright
+- `SMS_TIMEOUT_MINUTES` - task timeout
+- `SMTP_USER`, `SMTP_PASS`, `EMAIL_RECIPIENT` - Gmail SMTP for email delivery

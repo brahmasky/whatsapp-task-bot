@@ -4,6 +4,14 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import logger from '../utils/logger.js';
 
+// Suppress noisy Baileys internal logs (signal protocol session logs)
+const originalConsoleLog = console.log;
+console.log = (...args) => {
+  const str = args[0]?.toString() || '';
+  if (str.includes('SessionEntry') || str.includes('Closing session')) return;
+  originalConsoleLog.apply(console, args);
+};
+
 class WhatsAppService {
   constructor() {
     this.socket = null;

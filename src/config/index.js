@@ -26,6 +26,13 @@ const config = {
       : [],
   },
 
+  // Email settings (Gmail SMTP)
+  email: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+    recipient: process.env.EMAIL_RECIPIENT,
+  },
+
   // Environment
   env: process.env.NODE_ENV || 'development',
 };

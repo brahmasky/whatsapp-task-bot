@@ -18,6 +18,7 @@
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "dotenv": "^17.2.3",
+    "nodemailer": "^7.0.13",
     "playwright": "^1.45.0",
     "qrcode-terminal": "^0.12.0"
   },
