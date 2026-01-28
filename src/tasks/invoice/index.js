@@ -1,5 +1,5 @@
 import { TPGService } from './tpg.service.js';
-import { getStoredPassword } from './keychain.service.js';
+import { getStoredPassword, storePassword } from './keychain.service.js';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 
@@ -8,10 +8,11 @@ import logger from '../../utils/logger.js';
  *
  * Flow:
  * 1. User sends /invoice
- * 2. Bot initializes browser, logs into TPG, triggers SMS
- * 3. User receives SMS on phone, replies with 6-digit code
- * 4. Bot completes login, downloads invoice PDF
- * 5. Bot sends PDF to user via WhatsApp
+ * 2. Bot checks for credentials (env -> keychain -> prompt user)
+ * 3. Bot initializes browser, logs into TPG, triggers SMS
+ * 4. User receives SMS on phone, replies with 6-digit code
+ * 5. Bot completes login, downloads invoice PDF
+ * 6. Bot sends PDF to user via WhatsApp
  */
 
 // Store TPG service instances per user (for cleanup)
@@ -27,44 +28,53 @@ export default {
   async start(ctx) {
     await ctx.reply('Starting TPG invoice generation...');
 
-    // Get credentials
+    // Get credentials from environment
     let username = config.tpg.username;
     let password = config.tpg.password;
 
     // Try Keychain if env vars not set
     if (!username || !password) {
-      await ctx.reply('Looking up credentials from Keychain...');
+      logger.info('Credentials not in env, checking Keychain...');
 
       // If username is set, use it for keychain lookup
       if (username) {
         password = await getStoredPassword(username);
+        if (password) {
+          logger.info('Password found in Keychain');
+        }
       } else {
-        // Try to get password with a generic lookup
+        // Try generic lookup by service name
         password = await getStoredPassword('');
-      }
-
-      if (!password) {
-        await ctx.reply(
-          'No TPG credentials found.\n\n' +
-          'Please set TPG_USERNAME and TPG_PASSWORD in your .env file, ' +
-          'or store them in macOS Keychain with service name "TPG".'
-        );
-        ctx.completeTask();
-        return;
-      }
-
-      // If we got password from keychain but no username, we need username
-      if (!username) {
-        await ctx.reply(
-          'TPG_USERNAME not set in environment.\n' +
-          'Please set TPG_USERNAME in your .env file.'
-        );
-        ctx.completeTask();
-        return;
       }
     }
 
-    // Initialize TPG service
+    // If still missing credentials, prompt user
+    if (!username) {
+      ctx.updateTask('awaiting_username', {});
+      await ctx.reply(
+        'No TPG username found.\n\n' +
+        'Please enter your TPG username (email):'
+      );
+      return;
+    }
+
+    if (!password) {
+      ctx.updateTask('awaiting_password', { username });
+      await ctx.reply(
+        'No TPG password found in Keychain.\n\n' +
+        'Please enter your TPG password:'
+      );
+      return;
+    }
+
+    // Credentials ready, proceed with login
+    await this.proceedWithLogin(ctx, username, password);
+  },
+
+  /**
+   * Proceed with TPG login after credentials are obtained
+   */
+  async proceedWithLogin(ctx, username, password) {
     const tpgService = new TPGService();
     userServices.set(ctx.userId, tpgService);
 
@@ -76,7 +86,7 @@ export default {
       const result = await tpgService.login({ username, password });
 
       if (result.needsSMS) {
-        ctx.updateTask('awaiting_sms', { tpgService });
+        ctx.updateTask('awaiting_sms', { username, password });
         await ctx.reply(
           'SMS code has been sent to your phone.\n\n' +
           'Please reply with the 6-digit code.\n' +
@@ -100,11 +110,88 @@ export default {
   async onMessage(ctx, text) {
     const state = ctx.getState();
 
-    if (state.taskState === 'awaiting_sms') {
-      await this.handleSMSCode(ctx, text);
-    } else {
-      await ctx.reply('Unexpected state. Type /cancel to abort.');
+    switch (state.taskState) {
+      case 'awaiting_username':
+        await this.handleUsername(ctx, text);
+        break;
+      case 'awaiting_password':
+        await this.handlePassword(ctx, text);
+        break;
+      case 'awaiting_save_confirm':
+        await this.handleSaveConfirm(ctx, text);
+        break;
+      case 'awaiting_sms':
+        await this.handleSMSCode(ctx, text);
+        break;
+      default:
+        await ctx.reply('Unexpected state. Type /cancel to abort.');
     }
+  },
+
+  /**
+   * Handle username input
+   */
+  async handleUsername(ctx, text) {
+    const username = text.trim();
+
+    if (!username || username.length < 3) {
+      await ctx.reply('Invalid username. Please enter your TPG username (email):');
+      return;
+    }
+
+    // Check if password exists in Keychain for this username
+    const storedPassword = await getStoredPassword(username);
+
+    if (storedPassword) {
+      await ctx.reply('Password found in Keychain!');
+      await this.proceedWithLogin(ctx, username, storedPassword);
+    } else {
+      ctx.updateTask('awaiting_password', { username });
+      await ctx.reply('Please enter your TPG password:');
+    }
+  },
+
+  /**
+   * Handle password input
+   */
+  async handlePassword(ctx, text) {
+    const password = text.trim();
+    const { username } = ctx.getTaskData();
+
+    if (!password || password.length < 4) {
+      await ctx.reply('Invalid password. Please enter your TPG password:');
+      return;
+    }
+
+    // Ask if user wants to save to Keychain
+    ctx.updateTask('awaiting_save_confirm', { username, password });
+    await ctx.reply(
+      'Save password to macOS Keychain for future use?\n\n' +
+      'Reply *yes* to save, or *no* to continue without saving:'
+    );
+  },
+
+  /**
+   * Handle save confirmation
+   */
+  async handleSaveConfirm(ctx, text) {
+    const response = text.trim().toLowerCase();
+    const { username, password } = ctx.getTaskData();
+
+    if (response === 'yes' || response === 'y') {
+      const saved = await storePassword(username, password);
+      if (saved) {
+        await ctx.reply('Password saved to Keychain.');
+      } else {
+        await ctx.reply('Failed to save to Keychain. Continuing anyway...');
+      }
+    } else if (response !== 'no' && response !== 'n') {
+      await ctx.reply('Please reply *yes* or *no*:');
+      return;
+    }
+
+    // Proceed with login
+    await this.proceedWithLogin(ctx, username, password);
   },
 
   /**
