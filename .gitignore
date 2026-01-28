@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+
+# WhatsApp auth session
+.baileys_auth/
+
+# Downloaded files
+downloads/*.pdf
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Playwright
+playwright-report/
+test-results/
