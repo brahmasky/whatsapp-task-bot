@@ -1,4 +1,5 @@
-import whatsappService from './core/whatsapp.service.js';
+import gateway from './core/gateway/index.js';
+import WhatsAppChannel from './core/channels/whatsapp.channel.js';
 import MessageRouter from './core/message.router.js';
 import taskRegistry from './core/task.registry.js';
 import stateManager from './core/state.manager.js';
@@ -12,6 +13,7 @@ import invoiceTask from './tasks/invoice/index.js';
  * WhatsApp Task Bot
  *
  * An extensible bot that handles various automated tasks triggered via WhatsApp commands.
+ * Uses a gateway architecture to support multiple messaging channels.
  */
 
 async function main() {
@@ -21,11 +23,15 @@ async function main() {
   taskRegistry.register(invoiceTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
-  // Create message router
-  const router = new MessageRouter(whatsappService);
+  // Create WhatsApp channel and register with gateway
+  const whatsappChannel = new WhatsAppChannel(gateway);
+  gateway.registerChannel('whatsapp', whatsappChannel);
 
-  // Setup message handler
-  whatsappService.onMessage(async (message) => {
+  // Create message router connected to gateway
+  const router = new MessageRouter(gateway);
+
+  // Wire gateway messages to router
+  gateway.on('message', async (message) => {
     try {
       await router.handleMessage(message);
     } catch (error) {
@@ -44,8 +50,8 @@ async function main() {
     }
   }, cleanupIntervalMs);
 
-  // Initialize WhatsApp
-  await whatsappService.initialize();
+  // Initialize gateway (which initializes all channels)
+  await gateway.initialize();
 
   // Graceful shutdown
   const shutdown = async (signal) => {
@@ -65,7 +71,8 @@ async function main() {
       stateManager.clearTask(userId);
     }
 
-    await whatsappService.shutdown();
+    // Shutdown gateway (which shuts down all channels)
+    await gateway.shutdown();
     process.exit(0);
   };
 

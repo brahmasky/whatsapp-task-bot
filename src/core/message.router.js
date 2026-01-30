@@ -8,15 +8,17 @@ import config from '../config/index.js';
  * - If user has active task → route to task handler
  * - If message is a command → start task or run global command
  * - Otherwise → ignore
+ *
+ * Works with normalized messages from the gateway.
  */
 class MessageRouter {
-  constructor(whatsappService) {
-    this.whatsapp = whatsappService;
+  constructor(gateway) {
+    this.gateway = gateway;
   }
 
   /**
    * Check if user is allowed to use the bot
-   * @param {object} message - The message object
+   * @param {NormalizedMessage} message - The normalized message
    * @returns {boolean}
    */
   isAllowedUser(message) {
@@ -27,7 +29,10 @@ class MessageRouter {
 
     // Check allowed users list
     if (config.bot.allowedUsers.length > 0) {
-      const phoneNumber = message.from?.split('@')[0];
+      // Extract phone number from the platform-specific part of userId
+      // Format: whatsapp:123456@s.whatsapp.net → 123456
+      const platformUserId = message.userId.split(':')[1] || message.userId;
+      const phoneNumber = platformUserId.split('@')[0];
       return config.bot.allowedUsers.includes(phoneNumber);
     }
 
@@ -36,37 +41,36 @@ class MessageRouter {
   }
 
   /**
-   * Handle an incoming message
-   * @param {object} message - The message object from WhatsApp service
+   * Handle an incoming normalized message
+   * @param {NormalizedMessage} message - The normalized message from gateway
    */
   async handleMessage(message) {
-    const { from, body, fromMe } = message;
+    const { userId, text, fromMe } = message;
 
     // Skip empty messages
-    if (!body || body.trim() === '') {
+    if (!text || text.trim() === '') {
       return;
     }
 
     // Check if user is allowed
     if (!this.isAllowedUser(message)) {
-      logger.debug(`Ignoring message from unauthorized user: ${from}`);
+      logger.debug(`Ignoring message from unauthorized user: ${userId}`);
       return;
     }
 
-    const text = body.trim();
-    const userId = from;
+    const trimmedText = text.trim();
 
-    logger.debug(`Message from ${fromMe ? 'self' : from}: ${text.substring(0, 50)}...`);
+    logger.debug(`Message from ${fromMe ? 'self' : userId}: ${trimmedText.substring(0, 50)}...`);
 
     // Check if user has an active task
     if (stateManager.hasActiveTask(userId)) {
-      await this.routeToActiveTask(userId, message, text);
+      await this.routeToActiveTask(userId, message, trimmedText);
       return;
     }
 
     // Check if message is a command
-    if (text.startsWith('/')) {
-      await this.handleCommand(userId, message, text);
+    if (trimmedText.startsWith('/')) {
+      await this.handleCommand(userId, message, trimmedText);
       return;
     }
 
@@ -84,7 +88,7 @@ class MessageRouter {
     if (!task) {
       logger.error(`Active task '${taskName}' not found in registry`);
       stateManager.clearTask(userId);
-      await message.reply('Something went wrong. Your task has been cancelled.');
+      await this.reply(message, 'Something went wrong. Your task has been cancelled.');
       return;
     }
 
@@ -95,7 +99,7 @@ class MessageRouter {
       await task.onMessage(ctx, text);
     } catch (error) {
       logger.error(`Error in task '${taskName}' handler:`, { error: error.message });
-      await message.reply(`Error: ${error.message}\nTask cancelled.`);
+      await this.reply(message, `Error: ${error.message}\nTask cancelled.`);
       await this.cleanupTask(userId, task, ctx);
     }
   }
@@ -134,7 +138,7 @@ class MessageRouter {
     }
 
     // Unknown command
-    await message.reply(`Unknown command: ${command}\nType /help for available commands.`);
+    await this.reply(message, `Unknown command: ${command}\nType /help for available commands.`);
   }
 
   /**
@@ -154,21 +158,35 @@ class MessageRouter {
       await task.start(ctx, args);
     } catch (error) {
       logger.error(`Error starting task '${command}':`, { error: error.message });
-      await message.reply(`Failed to start task: ${error.message}`);
+      await this.reply(message, `Failed to start task: ${error.message}`);
       await this.cleanupTask(userId, task, ctx);
     }
   }
 
   /**
-   * Create context object for task handlers
+   * Create context object for task handlers.
+   * The context provides a channel-agnostic interface for tasks.
    */
   createContext(userId, message) {
+    const { channelType } = message;
+
     return {
       userId,
       message,
-      reply: (text) => message.reply(text),
+
+      // Send text reply
+      reply: (text) => this.reply(message, text),
+
+      // Send document
       sendDocument: (filePath, filename, mimetype, caption) =>
-        this.whatsapp.sendDocument(userId, filePath, filename, mimetype, caption),
+        this.gateway.send(channelType, {
+          type: 'document',
+          userId,
+          filePath,
+          filename,
+          mimetype: mimetype || 'application/pdf',
+          caption: caption || '',
+        }),
 
       // State management
       getState: () => stateManager.getState(userId),
@@ -176,6 +194,18 @@ class MessageRouter {
       updateTask: (state, data) => stateManager.updateTask(userId, state, data),
       completeTask: () => stateManager.clearTask(userId),
     };
+  }
+
+  /**
+   * Send a text reply to a message
+   */
+  async reply(message, text) {
+    await this.gateway.send(message.channelType, {
+      type: 'text',
+      userId: message.userId,
+      text,
+      quotedMessage: message.raw?._original || null,
+    });
   }
 
   /**
@@ -211,7 +241,7 @@ ${tasksHelp}
 
 To start a task, type its command (e.g., /invoice)`;
 
-    await message.reply(help);
+    await this.reply(message, help);
   }
 
   /**
@@ -221,7 +251,7 @@ To start a task, type its command (e.g., /invoice)`;
     const tasks = taskRegistry.listTasks();
 
     if (tasks.length === 0) {
-      await message.reply('No tasks are registered.');
+      await this.reply(message, 'No tasks are registered.');
       return;
     }
 
@@ -229,7 +259,7 @@ To start a task, type its command (e.g., /invoice)`;
       .map(t => `${t.command} - ${t.description}`)
       .join('\n');
 
-    await message.reply(`*Available Tasks:*\n${taskList}`);
+    await this.reply(message, `*Available Tasks:*\n${taskList}`);
   }
 
   /**
@@ -237,7 +267,7 @@ To start a task, type its command (e.g., /invoice)`;
    */
   async cancelTask(userId, message) {
     if (!stateManager.hasActiveTask(userId)) {
-      await message.reply('No active task to cancel.');
+      await this.reply(message, 'No active task to cancel.');
       return;
     }
 
@@ -246,7 +276,7 @@ To start a task, type its command (e.g., /invoice)`;
     const ctx = this.createContext(userId, message);
 
     await this.cleanupTask(userId, task, ctx);
-    await message.reply(`Task '${taskName}' cancelled.`);
+    await this.reply(message, `Task '${taskName}' cancelled.`);
     logger.info(`Task '${taskName}' cancelled by user ${userId}`);
   }
 
@@ -257,12 +287,13 @@ To start a task, type its command (e.g., /invoice)`;
     const state = stateManager.getState(userId);
 
     if (!state) {
-      await message.reply('No active task.');
+      await this.reply(message, 'No active task.');
       return;
     }
 
     const elapsed = Math.floor((Date.now() - state.startedAt) / 1000);
-    await message.reply(
+    await this.reply(
+      message,
       `*Current Task:* ${state.activeTask}\n` +
       `*State:* ${state.taskState}\n` +
       `*Running for:* ${elapsed} seconds`
