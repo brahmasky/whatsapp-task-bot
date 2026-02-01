@@ -46,7 +46,6 @@ class StateManager {
    * @param {object} initialData - Initial task data
    */
   startTask(userId, taskName, initialData = {}) {
-    logger.debug(`Starting task '${taskName}' for user ${userId}`);
     this.userStates.set(userId, {
       activeTask: taskName,
       taskState: 'started',
@@ -90,10 +89,6 @@ class StateManager {
    * @param {string} userId - The user's JID
    */
   clearTask(userId) {
-    const state = this.userStates.get(userId);
-    if (state) {
-      logger.debug(`Clearing task '${state.activeTask}' for user ${userId}`);
-    }
     this.userStates.delete(userId);
   }
 

@@ -29,27 +29,8 @@ export default {
   async start(ctx) {
     await ctx.reply('Starting TPG invoice generation...');
 
-    // Get credentials from environment
-    let username = config.tpg.username;
-    let password = config.tpg.password;
+    const username = config.tpg.username;
 
-    // Try Keychain if env vars not set
-    if (!username || !password) {
-      logger.info('Credentials not in env, checking Keychain...');
-
-      // If username is set, use it for keychain lookup
-      if (username) {
-        password = await getStoredPassword(username);
-        if (password) {
-          logger.info('Password found in Keychain');
-        }
-      } else {
-        // Try generic lookup by service name
-        password = await getStoredPassword('');
-      }
-    }
-
-    // If still missing credentials, prompt user
     if (!username) {
       ctx.updateTask('awaiting_username', {});
       await ctx.reply(
@@ -59,17 +40,20 @@ export default {
       return;
     }
 
-    if (!password) {
+    // Check Keychain for password
+    logger.info('Checking Keychain for password...');
+    const password = await getStoredPassword(username);
+
+    if (password) {
+      logger.info('Password found in Keychain');
+      await this.proceedWithLogin(ctx, username, password);
+    } else {
       ctx.updateTask('awaiting_password', { username });
       await ctx.reply(
-        'No TPG password found in Keychain.\n\n' +
+        `No password found in Keychain for ${username}.\n\n` +
         'Please enter your TPG password:'
       );
-      return;
     }
-
-    // Credentials ready, proceed with login
-    await this.proceedWithLogin(ctx, username, password);
   },
 
   /**

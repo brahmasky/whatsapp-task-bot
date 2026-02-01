@@ -32,7 +32,6 @@ export class TPGService {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
     });
 
-    logger.info('Browser initialized');
   }
 
   /**
@@ -245,8 +244,6 @@ export class TPGService {
       }
     }
 
-    logger.info('All digits entered');
-
     await this.page.waitForTimeout(1000);
 
     // Click Verify button
@@ -406,7 +403,6 @@ export class TPGService {
    */
   async cleanup() {
     if (this.browser) {
-      logger.info('Closing browser...');
       await this.browser.close();
       this.browser = null;
       this.page = null;

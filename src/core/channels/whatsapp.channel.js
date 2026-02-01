@@ -26,8 +26,6 @@ class WhatsAppChannel extends BaseChannel {
 
     // Initialize WhatsApp service (Baileys connection)
     await this.service.initialize();
-
-    logger.info('WhatsApp channel initialized');
   }
 
   /**
@@ -126,7 +124,6 @@ class WhatsAppChannel extends BaseChannel {
    */
   async shutdown() {
     await this.service.shutdown();
-    logger.info('WhatsApp channel shut down');
   }
 }
 

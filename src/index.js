@@ -8,6 +8,7 @@ import logger from './utils/logger.js';
 
 // Import tasks
 import invoiceTask from './tasks/invoice/index.js';
+import storageTask from './tasks/storage/index.js';
 
 /**
  * WhatsApp Task Bot
@@ -21,6 +22,7 @@ async function main() {
 
   // Register tasks
   taskRegistry.register(invoiceTask);
+  taskRegistry.register(storageTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway

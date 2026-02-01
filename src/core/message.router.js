@@ -60,7 +60,18 @@ class MessageRouter {
 
     const trimmedText = text.trim();
 
-    logger.debug(`Message from ${fromMe ? 'self' : userId}: ${trimmedText.substring(0, 50)}...`);
+    const state = stateManager.getState(userId);
+    const logText = state?.taskState === 'awaiting_password' ? '[password]' : trimmedText.substring(0, 50);
+    logger.debug(`Message from ${fromMe ? 'self' : userId}: ${logText}...`);
+
+    // Global commands always take priority, even during an active task
+    if (trimmedText.startsWith('/')) {
+      const command = trimmedText.split(/\s+/)[0].toLowerCase();
+      if (['/help', '/tasks', '/cancel', '/status'].includes(command)) {
+        await this.handleCommand(userId, message, trimmedText);
+        return;
+      }
+    }
 
     // Check if user has an active task
     if (stateManager.hasActiveTask(userId)) {

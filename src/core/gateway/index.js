@@ -55,7 +55,6 @@ class Gateway extends EventEmitter {
    * @param {NormalizedMessage} message - The normalized message
    */
   handleMessage(message) {
-    logger.debug(`Gateway received message from ${message.channelType}:${message.userId}`);
     this.emit('message', message);
   }
 
@@ -96,7 +95,6 @@ class Gateway extends EventEmitter {
     logger.info('Initializing gateway...');
 
     for (const [channelType, channel] of this.channels) {
-      logger.info(`Initializing channel: ${channelType}`);
       await channel.initialize();
     }
 
@@ -110,7 +108,6 @@ class Gateway extends EventEmitter {
     logger.info('Shutting down gateway...');
 
     for (const [channelType, channel] of this.channels) {
-      logger.info(`Shutting down channel: ${channelType}`);
       await channel.shutdown();
     }
 
