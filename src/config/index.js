@@ -7,6 +7,18 @@ const config = {
     password: process.env.TPG_PASSWORD,
   },
 
+  // E*TRADE API credentials
+  etrade: {
+    consumerKey: process.env.ETRADE_CONSUMER_KEY,
+    consumerSecret: process.env.ETRADE_CONSUMER_SECRET,
+    sandbox: process.env.ETRADE_SANDBOX !== 'false', // default to sandbox
+  },
+
+  // Claude API
+  claude: {
+    apiKey: process.env.ANTHROPIC_API_KEY,
+  },
+
   // Playwright settings
   playwright: {
     headless: process.env.HEADLESS !== 'false',

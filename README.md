@@ -31,6 +31,38 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 
 4. Scan the QR code with WhatsApp (Settings > Linked Devices > Link a Device)
 
+## Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│  WhatsApp   │────▶│   Gateway   │────▶│   Router     │────▶│    Tasks    │
+│   User      │     │  (Channel)  │     │  (Auth/Cmd)  │     │  Registry   │
+└─────────────┘     └─────────────┘     └──────────────┘     └──────┬──────┘
+                                                                    │
+                    ┌───────────────────────────────────────────────┼───────┐
+                    │                       │                       │       │
+                    ▼                       ▼                       ▼       ▼
+             ┌────────────┐          ┌────────────┐          ┌────────────────┐
+             │  /invoice  │          │  /system   │          │   /portfolio   │
+             │            │          │            │          │                │
+             │ Playwright │          │ macOS stat │          │  Claude Agent  │
+             │ + Keychain │          │ CPU/Mem/   │          │  + MCP Tools   │
+             │ + Email    │          │ Temp/Login │          │                │
+             └────────────┘          └────────────┘          └───────┬────────┘
+                                                                     │
+                                                        ┌────────────┴────────────┐
+                                                        ▼                         ▼
+                                                 ┌────────────┐            ┌────────────┐
+                                                 │  E*TRADE   │            │  Research  │
+                                                 │ MCP Server │            │ MCP Server │
+                                                 └─────┬──────┘            └─────┬──────┘
+                                                       ▼                         ▼
+                                                 ┌────────────┐            ┌────────────┐
+                                                 │ E*TRADE API│            │ News/Quote │
+                                                 │ (OAuth)    │            │ APIs       │
+                                                 └────────────┘            └────────────┘
+```
+
 ## Available Commands
 
 - `/help` - Show available commands

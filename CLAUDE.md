@@ -11,6 +11,7 @@ WhatsApp Task Bot is an extensible Node.js automation bot that runs on WhatsApp,
 ```bash
 npm start        # Run the bot
 npm run dev      # Run with hot-reload (nodemon)
+npm run mcp      # Run E*TRADE MCP server (for Claude Desktop)
 ```
 
 No test or lint scripts are configured.
@@ -18,9 +19,96 @@ No test or lint scripts are configured.
 ## Architecture
 
 ```
-WhatsApp Messages → MessageRouter → TaskRegistry → Task Handlers
-                                        ↓
-                                 StateManager (per-user state)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         WhatsApp Task Bot Architecture                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────┐
+│    WhatsApp     │
+│     User        │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ WhatsAppChannel │
+│   (Baileys)     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│        Gateway          │
+│   (EventEmitter bus)    │
+│                         │
+│  • Normalize messages   │
+│  • Route responses      │
+│  • Multi-channel ready  │
+└────────────┬────────────┘
+             │
+             ▼
+┌─────────────────────────┐
+│    MessageRouter        │
+│                         │
+│  • Authorization        │
+│  • Command parsing      │
+│  • Task context         │
+└────────────┬────────────┘
+             │
+┌────────────┼────────────────────┐
+│            │                    │
+▼            ▼                    ▼
+┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+│  TaskRegistry  │  │  StateManager  │  │  Global Cmds   │
+│                │  │                │  │                │
+│  • /invoice    │  │  • Per-user    │  │  • /help       │
+│  • /system     │  │  • In-memory   │  │  • /cancel     │
+│  • /portfolio  │  │  • Cleanup     │  │  • /status     │
+└───────┬────────┘  └────────────────┘  └────────────────┘
+        │
+        ├──────────────────────────────────────────────┐
+        │                      │                       │
+        ▼                      ▼                       ▼
+┌────────────────┐   ┌────────────────┐      ┌────────────────┐
+│   /invoice     │   │    /system     │      │   /portfolio   │
+│                │   │                │      │                │
+│  TPG Browser   │   │  macOS Stats   │      │  Claude Agent  │
+│  Automation    │   │  • CPU/Temp    │      │  (Agentic Loop)│
+│  (Playwright)  │   │  • Memory      │      │                │
+└───────┬────────┘   │  • Storage     │      └───────┬────────┘
+        │            │  • Sessions    │              │
+        │            └────────────────┘              │
+        ▼                                            ▼
+┌────────────────┐                      ┌─────────────────────┐
+│ Keychain Svc   │                      │   agent.service     │
+│ (macOS)        │                      │                     │
+└───────┬────────┘                      │  ┌───────────────┐  │
+        │                               │  │ Claude API    │  │
+        ▼                               │  │ (Anthropic)   │  │
+┌────────────────┐                      │  └───────┬───────┘  │
+│  tpg.service   │                      │          │          │
+│  (Playwright)  │                      │    Tool Use Loop    │
+└───────┬────────┘                      │          │          │
+        │                               │  ┌───────▼───────┐  │
+        ▼                               │  │  MCP Client   │  │
+┌────────────────┐                      │  └───────┬───────┘  │
+│ email.service  │                      └──────────┼──────────┘
+│ (Gmail SMTP)   │                                 │
+└────────────────┘                  ┌──────────────┴──────────────┐
+                                    │                             │
+                                    ▼                             ▼
+                         ┌──────────────────┐          ┌──────────────────┐
+                         │  etrade-server   │          │ stock-research   │
+                         │     (MCP)        │          │     (MCP)        │
+                         │                  │          │                  │
+                         │ • Portfolio      │          │ • News (Finlight)│
+                         │ • Positions      │          │ • Quotes (Yahoo) │
+                         │ • Holdings       │          │ • Company Info   │
+                         └────────┬─────────┘          └────────┬─────────┘
+                                  │                             │
+                                  ▼                             ▼
+                         ┌──────────────────┐          ┌──────────────────┐
+                         │  E*TRADE API     │          │  External APIs   │
+                         │  (OAuth 1.0a)    │          │ (Finlight/Yahoo) │
+                         └──────────────────┘          └──────────────────┘
 ```
 
 **Core Components (`src/core/`):**
@@ -66,6 +154,40 @@ WhatsApp Messages → MessageRouter → TaskRegistry → Task Handlers
 - `isEmailConfigured()` - check if email env vars are set
 - `sendEmailWithAttachment({ to, subject, text, attachmentPath, attachmentFilename })` - send email with file
 
+## MCP Server (E*TRADE)
+
+The project includes an MCP server (`src/mcp/etrade-server.js`) that exposes E*TRADE portfolio tools via the Model Context Protocol. This allows Claude Desktop or other MCP clients to access your portfolio.
+
+**Available Tools:**
+- `get_portfolio_summary` - Total value, accounts, position count
+- `get_all_positions` - All positions with details
+- `get_top_holdings` - Largest positions by weight
+- `get_worst_performers` - Positions with biggest losses
+- `get_sector_breakdown` - Diversification analysis
+- `get_stock_news` - Recent news for a symbol
+- `refresh_portfolio` - Force refresh cached data
+
+**Claude Desktop Setup:**
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "etrade": {
+      "command": "node",
+      "args": ["/path/to/whatsapp-task-bot/src/mcp/etrade-server.js"],
+      "env": {
+        "ETRADE_CONSUMER_KEY": "your_key",
+        "ETRADE_CONSUMER_SECRET": "your_secret",
+        "ETRADE_SANDBOX": "false"
+      }
+    }
+  }
+}
+```
+
+**Note:** You must first authenticate via the WhatsApp bot (`/portfolio`) to store OAuth tokens in keychain before using the MCP server.
+
 ## Environment Variables
 
 See `.env.example`. Key vars:
@@ -73,3 +195,6 @@ See `.env.example`. Key vars:
 - `HEADLESS` - browser mode for Playwright
 - `SMS_TIMEOUT_MINUTES` - task timeout
 - `SMTP_USER`, `SMTP_PASS`, `EMAIL_RECIPIENT` - Gmail SMTP for email delivery
+- `ETRADE_CONSUMER_KEY`, `ETRADE_CONSUMER_SECRET` - E*TRADE API credentials
+- `ETRADE_SANDBOX` - set to `false` for production E*TRADE API
+- `ANTHROPIC_API_KEY` - Claude API key for portfolio analysis

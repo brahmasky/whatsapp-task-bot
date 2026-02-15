@@ -3,12 +3,14 @@ import WhatsAppChannel from './core/channels/whatsapp.channel.js';
 import MessageRouter from './core/message.router.js';
 import taskRegistry from './core/task.registry.js';
 import stateManager from './core/state.manager.js';
+import { disconnectAll as disconnectMCPClients } from './mcp/client.js';
 import config from './config/index.js';
 import logger from './utils/logger.js';
 
 // Import tasks
 import invoiceTask from './tasks/invoice/index.js';
-import storageTask from './tasks/storage/index.js';
+import systemTask from './tasks/system/index.js';
+import portfolioTask from './tasks/portfolio/index.js';
 
 /**
  * WhatsApp Task Bot
@@ -22,7 +24,8 @@ async function main() {
 
   // Register tasks
   taskRegistry.register(invoiceTask);
-  taskRegistry.register(storageTask);
+  taskRegistry.register(systemTask);
+  taskRegistry.register(portfolioTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway
@@ -72,6 +75,9 @@ async function main() {
       }
       stateManager.clearTask(userId);
     }
+
+    // Disconnect MCP clients
+    await disconnectMCPClients();
 
     // Shutdown gateway (which shuts down all channels)
     await gateway.shutdown();

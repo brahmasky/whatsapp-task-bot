@@ -1,16 +1,22 @@
 import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { readFileSync } from 'fs';
+import { inspect } from 'util';
 import path from 'path';
 import logger from '../utils/logger.js';
 
-// Suppress noisy Baileys internal logs (signal protocol session logs)
-const originalConsoleLog = console.log;
-console.log = (...args) => {
-  const str = args[0]?.toString() || '';
-  if (str.includes('SessionEntry') || str.includes('Closing session')) return;
-  originalConsoleLog.apply(console, args);
-};
+// Suppress noisy Baileys internal logs (signal protocol session details)
+const noisyPatterns = ['SessionEntry', 'Closing session', '_chains', 'ephemeralKeyPair', 'chainKey', 'currentRatchet'];
+function shouldSuppress(args) {
+  const str = args.map(a => typeof a === 'object' ? inspect(a, { depth: 2 }) : String(a)).join(' ');
+  return noisyPatterns.some(p => str.includes(p));
+}
+const origLog = console.log;
+const origDebug = console.debug;
+const origInfo = console.info;
+console.log = (...args) => { if (!shouldSuppress(args)) origLog.apply(console, args); };
+console.debug = (...args) => { if (!shouldSuppress(args)) origDebug.apply(console, args); };
+console.info = (...args) => { if (!shouldSuppress(args)) origInfo.apply(console, args); };
 
 class WhatsAppService {
   constructor() {
