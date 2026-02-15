@@ -19,96 +19,97 @@ No test or lint scripts are configured.
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         WhatsApp Task Bot Architecture                       │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          WhatsApp Task Bot Architecture                          │
+└─────────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────┐
-│    WhatsApp     │
-│     User        │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ WhatsAppChannel │
-│   (Baileys)     │
+┌─────────────────┐                              ┌─────────────────┐
+│    WhatsApp     │                              │    Scheduler    │
+│     User        │                              │   (node-cron)   │
+└────────┬────────┘                              └────────┬────────┘
+         │                                                │
+         ▼                                                │
+┌─────────────────┐                                       │
+│ WhatsAppChannel │◄──────────────────────────────────────┘
+│   (Baileys)     │        (scheduled messages)
 └────────┬────────┘
          │
          ▼
 ┌─────────────────────────┐
 │        Gateway          │
 │   (EventEmitter bus)    │
-│                         │
-│  • Normalize messages   │
-│  • Route responses      │
-│  • Multi-channel ready  │
 └────────────┬────────────┘
              │
              ▼
 ┌─────────────────────────┐
 │    MessageRouter        │
-│                         │
-│  • Authorization        │
-│  • Command parsing      │
-│  • Task context         │
 └────────────┬────────────┘
              │
-┌────────────┼────────────────────┐
-│            │                    │
-▼            ▼                    ▼
-┌────────────────┐  ┌────────────────┐  ┌────────────────┐
-│  TaskRegistry  │  │  StateManager  │  │  Global Cmds   │
-│                │  │                │  │                │
-│  • /invoice    │  │  • Per-user    │  │  • /help       │
-│  • /system     │  │  • In-memory   │  │  • /cancel     │
-│  • /portfolio  │  │  • Cleanup     │  │  • /status     │
-└───────┬────────┘  └────────────────┘  └────────────────┘
-        │
-        ├──────────────────────────────────────────────┐
-        │                      │                       │
-        ▼                      ▼                       ▼
-┌────────────────┐   ┌────────────────┐      ┌────────────────┐
-│   /invoice     │   │    /system     │      │   /portfolio   │
-│                │   │                │      │                │
-│  TPG Browser   │   │  macOS Stats   │      │  Claude Agent  │
-│  Automation    │   │  • CPU/Temp    │      │  (Agentic Loop)│
-│  (Playwright)  │   │  • Memory      │      │                │
-└───────┬────────┘   │  • Storage     │      └───────┬────────┘
-        │            │  • Sessions    │              │
-        │            └────────────────┘              │
-        ▼                                            ▼
-┌────────────────┐                      ┌─────────────────────┐
-│ Keychain Svc   │                      │   agent.service     │
-│ (macOS)        │                      │                     │
-└───────┬────────┘                      │  ┌───────────────┐  │
-        │                               │  │ Claude API    │  │
-        ▼                               │  │ (Anthropic)   │  │
-┌────────────────┐                      │  └───────┬───────┘  │
-│  tpg.service   │                      │          │          │
-│  (Playwright)  │                      │    Tool Use Loop    │
-└───────┬────────┘                      │          │          │
-        │                               │  ┌───────▼───────┐  │
-        ▼                               │  │  MCP Client   │  │
-┌────────────────┐                      │  └───────┬───────┘  │
-│ email.service  │                      └──────────┼──────────┘
-│ (Gmail SMTP)   │                                 │
-└────────────────┘                  ┌──────────────┴──────────────┐
-                                    │                             │
-                                    ▼                             ▼
-                         ┌──────────────────┐          ┌──────────────────┐
-                         │  etrade-server   │          │ stock-research   │
-                         │     (MCP)        │          │     (MCP)        │
-                         │                  │          │                  │
-                         │ • Portfolio      │          │ • News (Finlight)│
-                         │ • Positions      │          │ • Quotes (Yahoo) │
-                         │ • Holdings       │          │ • Company Info   │
-                         └────────┬─────────┘          └────────┬─────────┘
-                                  │                             │
-                                  ▼                             ▼
-                         ┌──────────────────┐          ┌──────────────────┐
-                         │  E*TRADE API     │          │  External APIs   │
-                         │  (OAuth 1.0a)    │          │ (Finlight/Yahoo) │
-                         └──────────────────┘          └──────────────────┘
+┌────────────┼─────────────────────────────────┐
+│            │                    │            │
+▼            ▼                    ▼            ▼
+┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐
+│ /invoice │ │ /system  │ │ /portfolio │ │  /market   │
+│          │ │          │ │            │ │            │
+│Playwright│ │ macOS    │ │ Claude     │ │ Scheduled  │
+│+ Email   │ │ Stats    │ │ Agent      │ │ Updates    │
+└────┬─────┘ └──────────┘ └─────┬──────┘ └─────┬──────┘
+     │                          │              │
+     ▼                          │              │
+┌──────────┐                    │              │
+│ TPG Site │                    │              │
+│ Keychain │                    │              │
+│ Gmail    │                    │              │
+└──────────┘                    │              │
+                                ▼              ▼
+                    ┌─────────────────────────────────────┐
+                    │           MCP Servers               │
+                    │  ┌───────────┐    ┌──────────────┐  │
+                    │  │ E*TRADE   │    │ Stock        │  │
+                    │  │ Server    │    │ Research     │  │
+                    │  └─────┬─────┘    └──────┬───────┘  │
+                    └────────┼─────────────────┼──────────┘
+                             │                 │
+                             ▼                 ▼
+                    ┌─────────────┐    ┌─────────────────┐
+                    │ E*TRADE API │    │ Yahoo Finance   │
+                    │ (OAuth)     │    │ Google News     │
+                    └─────────────┘    └─────────────────┘
+```
+
+### /market Data Flow
+
+```
+  Scheduled (8AM/4:30PM ET)              On-demand (/market)
+         │                                      │
+         └──────────────┬───────────────────────┘
+                        ▼
+              ┌──────────────────┐
+              │  Market Calendar │ ──► Skip if weekend/holiday
+              └────────┬─────────┘
+                       │
+         ┌─────────────┼─────────────┐
+         ▼             ▼             ▼
+   ┌──────────┐  ┌──────────┐  ┌──────────────┐
+   │ Yahoo    │  │ Portfolio│  │ Google News  │
+   │ Finance  │  │ Cache    │  │ RSS          │
+   │ (sectors)│  │ (local)  │  │              │
+   └────┬─────┘  └────┬─────┘  └──────┬───────┘
+        │             │               │
+        └─────────────┼───────────────┘
+                      ▼
+            ┌──────────────────┐
+            │ Analyze & Format │
+            │                  │
+            │ • Sector rotation│
+            │ • Portfolio P&L  │
+            │ • Hybrid Claude  │
+            └────────┬─────────┘
+                     │
+                     ▼
+            ┌──────────────────┐
+            │  WhatsApp Msg    │
+            └──────────────────┘
 ```
 
 **Core Components (`src/core/`):**
@@ -187,6 +188,31 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 ```
 
 **Note:** You must first authenticate via the WhatsApp bot (`/portfolio`) to store OAuth tokens in keychain before using the MCP server.
+
+## Market Updates (/market)
+
+The `/market` command provides sector rotation analysis with portfolio context.
+
+**Features:**
+- Track 11 S&P sector ETFs + major indices (SPY, QQQ, DIA, IWM)
+- Sector rotation analysis (leaders, laggards, defensive/cyclical signal)
+- Live portfolio valuation using cached positions + Yahoo prices
+- Hybrid Claude analysis (template/Haiku/Sonnet based on market conditions)
+
+**Scheduled Updates:**
+- Pre-market: 8:00 AM ET on market days
+- Post-market: 4:30 PM ET on market days
+- Weekly summary: 9:00 AM ET on Saturdays
+
+**Commands:**
+- `/market` - Current market status
+- `/market status` - Scheduler info and next update times
+- `/market pre` - Force pre-market style update
+- `/market post` - Force post-market style update
+- `/market weekly` - Force weekly summary
+
+**Portfolio Caching:**
+Portfolio data is cached locally when `/portfolio` runs. Market updates use this cache + live Yahoo prices to show real-time P&L without calling E*TRADE API.
 
 ## Environment Variables
 
