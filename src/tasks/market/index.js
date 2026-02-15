@@ -23,6 +23,7 @@ import {
   formatStaleWarning,
 } from './formatter.js';
 import { initScheduler, getSchedulerStatus } from './scheduler.js';
+import { fetchMarketNews } from '../portfolio/news.service.js';
 import logger from '../../utils/logger.js';
 
 /**
@@ -42,8 +43,32 @@ export async function generateMarketUpdate(updateType = 'check') {
 
   // Compare to market if portfolio available
   let comparison = null;
+  let news = [];
   if (portfolio.available) {
     comparison = await compareToMarket(portfolio.summary.dayChangePercent);
+
+    // Fetch news for top movers (gainers + losers)
+    const movers = [
+      ...(portfolio.movers?.gainers || []).slice(0, 2),
+      ...(portfolio.movers?.losers || []).slice(0, 2),
+    ];
+    const moverSymbols = movers.map(m => m.symbol);
+
+    if (moverSymbols.length > 0) {
+      logger.info(`Fetching news for movers: ${moverSymbols.join(', ')}`);
+      const newsMap = await fetchMarketNews(moverSymbols, 4);
+
+      // Flatten news with symbol context
+      for (const [symbol, articles] of Object.entries(newsMap)) {
+        for (const article of articles.slice(0, 1)) { // 1 headline per stock
+          news.push({
+            symbol,
+            title: article.title,
+            source: article.source,
+          });
+        }
+      }
+    }
   }
 
   // Prepare data for analysis
@@ -53,6 +78,7 @@ export async function generateMarketUpdate(updateType = 'check') {
     sectorRotation,
     portfolio,
     comparison,
+    news,
   };
 
   // Generate insight (hybrid: template/haiku/sonnet based on conditions)

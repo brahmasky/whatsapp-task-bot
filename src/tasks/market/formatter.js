@@ -10,7 +10,7 @@ import { getMarketStatus, formatDate, getEasternTime } from './calendar.js';
  * Format pre-market update
  */
 export function formatPreMarketUpdate(data) {
-  const { indices, sectorRotation, portfolio, analysis } = data;
+  const { indices, sectorRotation, portfolio, analysis, news } = data;
   const now = getEasternTime();
   const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -47,6 +47,15 @@ export function formatPreMarketUpdate(data) {
     msg += '\n';
   }
 
+  // News for holdings
+  if (news && news.length > 0) {
+    msg += `*Headlines*\n`;
+    for (const item of news) {
+      msg += `• ${item.symbol}: ${item.title}\n`;
+    }
+    msg += '\n';
+  }
+
   // Insight
   if (analysis?.insight) {
     msg += `💡 *Watch*\n${analysis.insight}`;
@@ -59,7 +68,7 @@ export function formatPreMarketUpdate(data) {
  * Format post-market update
  */
 export function formatPostMarketUpdate(data) {
-  const { indices, sectorRotation, portfolio, analysis, comparison } = data;
+  const { indices, sectorRotation, portfolio, analysis, comparison, news } = data;
   const now = getEasternTime();
   const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
@@ -115,6 +124,15 @@ export function formatPostMarketUpdate(data) {
     msg += '\n';
   } else if (portfolio?.reason) {
     msg += `*Portfolio*\n⚠️ ${portfolio.reason}\n\n`;
+  }
+
+  // News for movers
+  if (news && news.length > 0) {
+    msg += `*News*\n`;
+    for (const item of news) {
+      msg += `• ${item.symbol}: ${item.title}\n`;
+    }
+    msg += '\n';
   }
 
   // Insight
