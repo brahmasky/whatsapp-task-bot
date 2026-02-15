@@ -11,6 +11,8 @@ import logger from './utils/logger.js';
 import invoiceTask from './tasks/invoice/index.js';
 import systemTask from './tasks/system/index.js';
 import portfolioTask from './tasks/portfolio/index.js';
+import marketTask, { initScheduler } from './tasks/market/index.js';
+import { stopScheduler } from './tasks/market/scheduler.js';
 
 /**
  * WhatsApp Task Bot
@@ -26,6 +28,7 @@ async function main() {
   taskRegistry.register(invoiceTask);
   taskRegistry.register(systemTask);
   taskRegistry.register(portfolioTask);
+  taskRegistry.register(marketTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway
@@ -58,6 +61,19 @@ async function main() {
   // Initialize gateway (which initializes all channels)
   await gateway.initialize();
 
+  // Initialize market update scheduler
+  // Send to first allowed user (self) for scheduled updates
+  const schedulerUserId = config.allowedUsers?.[0]
+    ? `whatsapp:${config.allowedUsers[0]}@s.whatsapp.net`
+    : null;
+
+  if (schedulerUserId) {
+    const sendFn = gateway.createSender('whatsapp');
+    initScheduler(sendFn, schedulerUserId);
+  } else {
+    logger.warn('No allowed users configured - market scheduler disabled');
+  }
+
   // Graceful shutdown
   const shutdown = async (signal) => {
     logger.info(`Received ${signal}, shutting down...`);
@@ -75,6 +91,9 @@ async function main() {
       }
       stateManager.clearTask(userId);
     }
+
+    // Stop market scheduler
+    stopScheduler();
 
     // Disconnect MCP clients
     await disconnectMCPClients();

@@ -24,6 +24,7 @@
     "@modelcontextprotocol/sdk": "^1.25.3",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "dotenv": "^17.2.3",
+    "node-cron": "^4.2.1",
     "nodemailer": "^7.0.13",
     "oauth-1.0a": "^2.2.6",
     "playwright": "^1.45.0",

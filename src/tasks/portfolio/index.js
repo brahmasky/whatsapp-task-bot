@@ -2,6 +2,7 @@ import { ETradeService } from './etrade.service.js';
 import { getStoredTokens, storeTokens, deleteTokens, SHARED_USER_ID } from './keychain.service.js';
 import { runPortfolioAgent } from './agent.service.js';
 import { getETradeClient } from '../../mcp/client.js';
+import { savePortfolioCache } from '../market/cache.service.js';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 
@@ -208,21 +209,48 @@ export default {
 
       const envLabel = config.etrade.sandbox ? '🧪 SANDBOX' : '🔴 LIVE';
 
+      // Fetch portfolio data via MCP (works for both sandbox and production)
+      await ctx.reply(`Fetching portfolio data [${envLabel}]...`);
+
+      const etradeClient = await getETradeClient();
+      const summary = await etradeClient.callTool('get_portfolio_summary', {});
+      const positions = await etradeClient.callTool('get_all_positions', {});
+
+      // Save to cache for market updates
+      try {
+        const cacheData = {
+          totalValue: summary.totalValue,
+          accounts: summary.accounts,
+          fetchedAt: summary.fetchedAt,
+        };
+        // Convert positions to the format expected by cache service
+        cacheData.accounts = [{
+          positions: positions.map(p => ({
+            Product: { symbol: p.symbol },
+            quantity: p.quantity,
+            marketValue: p.marketValue,
+            totalCost: p.costBasis,
+            totalGain: p.gainLoss,
+            totalGainPct: p.gainLossPct,
+          })),
+        }];
+
+        await savePortfolioCache(cacheData);
+        logger.info('Portfolio cache updated for market updates');
+      } catch (cacheError) {
+        logger.warn('Failed to save portfolio cache:', cacheError.message);
+      }
+
+      await ctx.reply(
+        `Portfolio loaded [${envLabel}]:\n` +
+        `- ${summary.accountCount} account(s)\n` +
+        `- ${summary.positionCount} position(s)\n` +
+        `- Total value: ${summary.totalValueFormatted}`
+      );
+
       if (config.etrade.sandbox) {
-        // In sandbox mode, call MCP E*TRADE server directly for data display
-        await ctx.reply(`Fetching portfolio data [${envLabel}]...`);
-
-        const etradeClient = await getETradeClient();
-        const summary = await etradeClient.callTool('get_portfolio_summary', {});
-        const positions = await etradeClient.callTool('get_all_positions', {});
-
-        await ctx.reply(
-          `Portfolio loaded [${envLabel}]:\n` +
-          `- ${summary.accountCount} account(s)\n` +
-          `- ${summary.positionCount} position(s)\n` +
-          `- Total value: ${summary.totalValueFormatted}\n\n` +
-          'Sandbox mode - skipping AI analysis.'
-        );
+        // Sandbox mode - just show positions, skip AI
+        await ctx.reply('Sandbox mode - skipping AI analysis.');
 
         // Format and send positions
         const positionsText = positions.map(p =>
