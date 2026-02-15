@@ -112,17 +112,16 @@ export default {
         statusMsg += `Jobs: ${status.jobs}\n\n`;
 
         if (status.nextRuns?.length > 0) {
-          statusMsg += `*Next Updates*\n`;
+          statusMsg += `*Next Updates (local time)*\n`;
           for (const run of status.nextRuns) {
-            const time = new Date(run.time).toLocaleString('en-US', {
+            const time = new Date(run.time).toLocaleString('en-AU', {
               weekday: 'short',
               month: 'short',
               day: 'numeric',
               hour: 'numeric',
               minute: '2-digit',
-              timeZone: 'America/New_York',
             });
-            statusMsg += `${run.type}: ${time} ET\n`;
+            statusMsg += `${run.type}: ${time}\n`;
           }
         }
 
