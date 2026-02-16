@@ -58,7 +58,7 @@ export function formatPreMarketUpdate(data) {
 
   // Insight
   if (analysis?.insight) {
-    msg += `💡 *Watch*\n${analysis.insight}`;
+    msg += `${analysis.method === 'claude-deep' ? '🔍' : '💡'} *Watch*\n${analysis.insight}`;
   }
 
   return msg;
@@ -137,7 +137,8 @@ export function formatPostMarketUpdate(data) {
 
   // Insight
   if (analysis?.insight) {
-    msg += `💡 ${analysis.insight}`;
+    const icon = analysis.method === 'claude-deep' ? '🔍' : '💡';
+    msg += `${icon} ${analysis.insight}`;
   }
 
   return msg;
@@ -181,7 +182,8 @@ export function formatWeeklySummary(data) {
 
   // Insight
   if (analysis?.insight) {
-    msg += `💡 *Outlook*\n${analysis.insight}`;
+    const icon = analysis.method === 'claude-deep' ? '🔍' : '💡';
+    msg += `${icon} *Outlook*\n${analysis.insight}`;
   }
 
   return msg;
@@ -235,7 +237,8 @@ export function formatMarketCheck(data) {
 
   // Insight
   if (analysis?.insight) {
-    msg += `💡 ${analysis.insight}`;
+    const icon = analysis.method === 'claude-deep' ? '🔍' : '💡';
+    msg += `${icon} ${analysis.insight}`;
   }
 
   return msg;

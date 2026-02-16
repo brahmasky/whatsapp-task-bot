@@ -5,12 +5,14 @@
  * - Routine days: Template-based (free)
  * - Notable moves: Haiku (fast, cheap)
  * - Major events: Sonnet (smart)
+ * - Extreme events: Deep (Sonnet + research tools)
  * - Weekly summaries: Sonnet
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
+import { runDeepAnalysis } from './deep-analyzer.service.js';
 
 /**
  * Determine analysis level based on market conditions
@@ -18,20 +20,40 @@ import logger from '../../utils/logger.js';
 export function determineAnalysisLevel(data) {
   const { indices, sectorRotation, portfolio } = data;
 
-  // Major market move (SPY > 1.5%)
   const spyMove = Math.abs(indices?.SPY?.changePercent || 0);
+  const qqqMove = Math.abs(indices?.QQQ?.changePercent || 0);
+  const diaMove = Math.abs(indices?.DIA?.changePercent || 0);
+  const iwmMove = Math.abs(indices?.IWM?.changePercent || 0);
+  const portfolioMove = Math.abs(portfolio?.summary?.dayChangePercent || 0);
+  const spread = sectorRotation?.spread || 0;
+
+  // Extreme event — deep analysis with research tools
+  if (spyMove > 2.5) {
+    return { level: 'deep', reason: `Extreme market move: SPY ${spyMove.toFixed(1)}%` };
+  }
+  if (qqqMove > 2.5 || diaMove > 2.5 || iwmMove > 2.5) {
+    const bigMover = qqqMove > 2.5 ? 'QQQ' : diaMove > 2.5 ? 'DIA' : 'IWM';
+    const bigMove = Math.max(qqqMove, diaMove, iwmMove);
+    return { level: 'deep', reason: `Extreme index move: ${bigMover} ${bigMove.toFixed(1)}%` };
+  }
+  if (portfolioMove > 3) {
+    return { level: 'deep', reason: `Extreme portfolio move: ${portfolioMove.toFixed(1)}%` };
+  }
+  if (spread > 4) {
+    return { level: 'deep', reason: `Extreme sector spread: ${spread.toFixed(1)}%` };
+  }
+
+  // Major market move (SPY > 1.5%)
   if (spyMove > 1.5) {
-    return { level: 'sonnet', reason: `Major market move: SPY ${spyMove > 0 ? '+' : ''}${spyMove.toFixed(1)}%` };
+    return { level: 'sonnet', reason: `Major market move: SPY ${spyMove.toFixed(1)}%` };
   }
 
   // Big portfolio swing (> 2%)
-  const portfolioMove = Math.abs(portfolio?.summary?.dayChangePercent || 0);
   if (portfolioMove > 2) {
-    return { level: 'sonnet', reason: `Large portfolio move: ${portfolioMove > 0 ? '+' : ''}${portfolioMove.toFixed(1)}%` };
+    return { level: 'sonnet', reason: `Large portfolio move: ${portfolioMove.toFixed(1)}%` };
   }
 
   // Strong sector rotation (spread > 3%)
-  const spread = sectorRotation?.spread || 0;
   if (spread > 3) {
     return { level: 'haiku', reason: `Strong sector rotation: ${spread.toFixed(1)}% spread` };
   }
@@ -226,6 +248,21 @@ export async function analyzeMarket(data, updateType = 'post-market', forceLevel
   let analysisMethod;
 
   switch (effectiveLevel) {
+    case 'deep': {
+      const deepResult = await runDeepAnalysis(data, updateType);
+      if (deepResult) {
+        insight = { text: deepResult.text, tokens: deepResult.tokens };
+        analysisMethod = 'claude-deep';
+        logger.info(`Deep analysis: ${deepResult.toolCalls} tool calls`);
+      } else {
+        // Fallback to regular sonnet if deep fails
+        logger.warn('Deep analysis failed, falling back to sonnet');
+        insight = await generateClaudeAnalysis(data, updateType, 'claude-sonnet-4-20250514');
+        analysisMethod = 'claude-sonnet';
+      }
+      break;
+    }
+
     case 'sonnet':
       insight = await generateClaudeAnalysis(data, updateType, 'claude-sonnet-4-20250514');
       analysisMethod = 'claude-sonnet';

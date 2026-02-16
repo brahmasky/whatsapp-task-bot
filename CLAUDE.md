@@ -106,6 +106,28 @@ No test or lint scripts are configured.
             │ • Hybrid Claude  │
             └────────┬─────────┘
                      │
+            ┌────────┴─────────┐
+            │  Level Router    │
+            │                  │
+            │ SPY < 1%  → template ($0)
+            │ SPY 1-1.5% → haiku  (~$0.0001)
+            │ SPY 1.5-2.5% → sonnet (~$0.001)
+            │ SPY > 2.5% → deep   (~$0.03)
+            └────────┬─────────┘
+                     │
+               (if deep)
+                     │
+            ┌────────▼─────────┐
+            │  Deep Analyzer   │
+            │  (agent loop)    │
+            │                  │
+            │ • 5 iterations   │
+            │ • 3 research     │
+            │   tools via MCP  │
+            │ • Falls back to  │
+            │   sonnet on fail │
+            └────────┬─────────┘
+                     │
                      ▼
             ┌──────────────────┐
             │  WhatsApp Msg    │
@@ -197,7 +219,8 @@ The `/market` command provides sector rotation analysis with portfolio context.
 - Track 11 S&P sector ETFs + major indices (SPY, QQQ, DIA, IWM)
 - Sector rotation analysis (leaders, laggards, defensive/cyclical signal)
 - Live portfolio valuation using cached positions + Yahoo prices
-- Hybrid Claude analysis (template/Haiku/Sonnet based on market conditions)
+- Hybrid Claude analysis (template/Haiku/Sonnet/Deep based on market conditions)
+- Deep analysis agent with research tools on extreme market events (SPY > 2.5%)
 
 **Scheduled Updates:**
 - Pre-market: 8:00 AM ET on market days
@@ -210,9 +233,20 @@ The `/market` command provides sector rotation analysis with portfolio context.
 - `/market pre` - Force pre-market style update
 - `/market post` - Force post-market style update
 - `/market weekly` - Force weekly summary
+- `/market deep` - Force deep analysis with research tools
 
 **Portfolio Caching:**
 Portfolio data is cached locally when `/portfolio` runs. Market updates use this cache + live Yahoo prices to show real-time P&L without calling E*TRADE API.
+
+**Analysis Tiers:**
+| Level | Trigger | Model | Tools | Cost |
+|-------|---------|-------|-------|------|
+| template | SPY < 1% | none | no | $0 |
+| haiku | SPY 1-1.5% | Haiku | no | ~$0.0001 |
+| sonnet | SPY 1.5-2.5% | Sonnet | no | ~$0.001 |
+| deep | SPY > 2.5% | Sonnet + agent loop | 3 research (MCP) | ~$0.03 |
+
+Deep analysis also triggers on: any major index > 2.5%, portfolio day change > 3%, or sector spread > 4%. On failure, falls back to regular Sonnet.
 
 ## Environment Variables
 

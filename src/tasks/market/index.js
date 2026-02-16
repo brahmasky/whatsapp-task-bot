@@ -9,6 +9,7 @@
  * - /market pre - Force pre-market style update
  * - /market post - Force post-market style update
  * - /market weekly - Force weekly summary
+ * - /market deep - Force deep analysis with research tools
  */
 
 import { fetchAllMarketData, analyzeSectorRotation } from './sector.service.js';
@@ -29,7 +30,7 @@ import logger from '../../utils/logger.js';
 /**
  * Generate a market update
  */
-export async function generateMarketUpdate(updateType = 'check') {
+export async function generateMarketUpdate(updateType = 'check', forceLevel = null) {
   logger.info(`Generating ${updateType} market update...`);
 
   // Fetch market data
@@ -81,8 +82,8 @@ export async function generateMarketUpdate(updateType = 'check') {
     news,
   };
 
-  // Generate insight (hybrid: template/haiku/sonnet based on conditions)
-  const analysis = await analyzeMarket(data, updateType);
+  // Generate insight (hybrid: template/haiku/sonnet/deep based on conditions)
+  const analysis = await analyzeMarket(data, updateType, forceLevel);
 
   // Add analysis to data
   data.analysis = analysis;
@@ -130,6 +131,12 @@ export default {
         updateType = 'post-market';
       } else if (arg === 'weekly' || arg === 'week') {
         updateType = 'weekly';
+      } else if (arg === 'deep') {
+        await ctx.reply('Running deep analysis with research tools...');
+        const message = await generateMarketUpdate('check', 'deep');
+        await ctx.reply(message);
+        ctx.completeTask();
+        return;
       } else if (arg === 'status') {
         // Show scheduler status
         const status = getSchedulerStatus();
