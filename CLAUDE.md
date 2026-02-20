@@ -45,15 +45,15 @@ No test or lint scripts are configured.
 │    MessageRouter        │
 └────────────┬────────────┘
              │
-┌────────────┼─────────────────────────────────┐
-│            │                    │            │
-▼            ▼                    ▼            ▼
-┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐
-│ /invoice │ │ /system  │ │ /portfolio │ │  /market   │
-│          │ │          │ │            │ │            │
-│Playwright│ │ macOS    │ │ Claude     │ │ Scheduled  │
-│+ Email   │ │ Stats    │ │ Agent      │ │ Updates    │
-└────┬─────┘ └──────────┘ └─────┬──────┘ └─────┬──────┘
+┌────────────┼─────────────────────────────────┬────────────┐
+│            │                    │            │            │
+▼            ▼                    ▼            ▼            ▼
+┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
+│ /invoice │ │ /system  │ │ /portfolio │ │  /market   │ │ /research  │
+│          │ │          │ │            │ │            │ │            │
+│Playwright│ │ macOS    │ │ Claude     │ │ Scheduled  │ │ Sonnet     │
+│+ Email   │ │ Stats    │ │ Agent      │ │ Updates    │ │ Agent Loop │
+└────┬─────┘ └──────────┘ └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
      │                          │              │
      ▼                          │              │
 ┌──────────┐                    │              │
@@ -61,12 +61,12 @@ No test or lint scripts are configured.
 │ Keychain │                    │              │
 │ Gmail    │                    │              │
 └──────────┘                    │              │
-                                ▼              ▼
-                    ┌─────────────────────────────────────┐
-                    │           MCP Servers               │
-                    │  ┌───────────┐    ┌──────────────┐  │
-                    │  │ E*TRADE   │    │ Stock        │  │
-                    │  │ Server    │    │ Research     │  │
+                                ▼              ▼              ▼
+                    ┌─────────────────────────────────────┐  ┌──────────────────┐
+                    │           MCP Servers               │  │ Yahoo Finance    │
+                    │  ┌───────────┐    ┌──────────────┐  │  │ + FMP stable API │
+                    │  │ E*TRADE   │    │ Stock        │  │  │ (fundamentals)   │
+                    │  │ Server    │    │ Research     │  │  └──────────────────┘
                     │  └─────┬─────┘    └──────┬───────┘  │
                     └────────┼─────────────────┼──────────┘
                              │                 │
@@ -248,6 +248,32 @@ Portfolio data is cached locally when `/portfolio` runs. Market updates use this
 
 Deep analysis also triggers on: any major index > 2.5%, portfolio day change > 3%, or sector spread > 4%. On failure, falls back to regular Sonnet.
 
+## Stock Research (/research)
+
+The `/research TICKER` command fetches fundamentals and runs a Sonnet agent loop to score a stock 0-100.
+
+**Usage:** `/research AAPL`
+
+**Architecture:**
+1. Fetch price + 52w range from Yahoo Finance `v8/finance/chart` (no key needed)
+2. Fetch 5 FMP `/stable/` endpoints in parallel: profile, ratios-ttm, quote, key-metrics-ttm, price-target-consensus
+3. Run Sonnet agent loop (max 4 turns) with scratchpad reasoning
+4. Agent calls `get_news` tool (inline via Google News RSS) for sentiment
+5. Agent outputs JSON with score, 4 sub-scores, recommendation, summary
+
+**Scoring dimensions (0-25 each):**
+- Valuation: P/E vs norms, P/B, analyst target upside
+- Quality: margins, ROE, FCF generation
+- Momentum: 52w range position, recent price action
+- Sentiment: news tone from `get_news` tool call
+
+**Key files:**
+- `src/tasks/research/fundamentals.service.js` - Yahoo + FMP data fetching
+- `src/tasks/research/agent.service.js` - Sonnet agent loop with scratchpad
+- `src/tasks/research/index.js` - task definition and WhatsApp formatting
+
+**Requires:** `FMP_API_KEY` + `ANTHROPIC_API_KEY`. Est. cost: ~$0.05/call.
+
 ## Environment Variables
 
 See `.env.example`. Key vars:
@@ -257,4 +283,6 @@ See `.env.example`. Key vars:
 - `SMTP_USER`, `SMTP_PASS`, `EMAIL_RECIPIENT` - Gmail SMTP for email delivery
 - `ETRADE_CONSUMER_KEY`, `ETRADE_CONSUMER_SECRET` - E*TRADE API credentials
 - `ETRADE_SANDBOX` - set to `false` for production E*TRADE API
-- `ANTHROPIC_API_KEY` - Claude API key for portfolio analysis
+- `ANTHROPIC_API_KEY` - Claude API key for portfolio/market/research analysis
+- `FMP_API_KEY` - Financial Modeling Prep key for `/research` fundamentals (free tier: 250 calls/day)
+- `LOG_LEVEL` - log verbosity: `info` (default, hides debug) or `debug`

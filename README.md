@@ -11,6 +11,7 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 - **Secure Credentials** - macOS Keychain integration for password storage
 - **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration
 - **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
+- **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP
 - **System Monitoring** - macOS CPU, memory, disk, and temperature stats
 
 ## Setup
@@ -84,6 +85,21 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 | `/market weekly` | Force weekly summary |
 | `/market deep` | Force deep analysis with research tools |
 | `/market status` | Scheduler info and next update times |
+| `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals and recommendation |
+
+### Research Scoring
+
+The `/research` command runs a Sonnet agent loop that scores a stock across four dimensions:
+
+| Dimension | What it measures | Max |
+|-----------|-----------------|-----|
+| Valuation | P/E vs sector norms, P/B, analyst target upside | 25 |
+| Quality | Profit margins, ROE, FCF generation, balance sheet | 25 |
+| Momentum | 52-week range position, recent price action | 25 |
+| Sentiment | News tone and recency of catalysts | 25 |
+
+Data sources: Yahoo Finance (price/52w range, free) + FMP `/stable/` API (fundamentals, free tier = 250 calls/day).
+Requires `FMP_API_KEY` and `ANTHROPIC_API_KEY`. Est. cost: ~$0.05/call.
 
 ### Market Analysis Tiers
 
@@ -116,7 +132,9 @@ Scheduled updates run automatically on market days:
 | `ETRADE_CONSUMER_KEY` | E*TRADE API consumer key |
 | `ETRADE_CONSUMER_SECRET` | E*TRADE API consumer secret |
 | `ETRADE_SANDBOX` | `false` for production E*TRADE API |
-| `ANTHROPIC_API_KEY` | Claude API key for portfolio/market analysis |
+| `ANTHROPIC_API_KEY` | Claude API key for portfolio/market/research analysis |
+| `FMP_API_KEY` | Financial Modeling Prep key for `/research` fundamentals (free at financialmodelingprep.com) |
+| `LOG_LEVEL` | Log verbosity: `info` (default) or `debug` |
 
 ## Adding Tasks
 
