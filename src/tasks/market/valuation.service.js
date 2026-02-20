@@ -98,7 +98,8 @@ export async function getLivePortfolioValuation() {
   // Overall portfolio stats
   const totalGain = totalCurrentValue - totalCostBasis;
   const totalGainPercent = totalCostBasis > 0 ? (totalGain / totalCostBasis) * 100 : 0;
-  const dayChangePercent = cache.totalValue > 0 ? (totalDayChange / cache.totalValue) * 100 : 0;
+  const prevCloseValue = totalCurrentValue - totalDayChange;
+  const dayChangePercent = prevCloseValue > 0 ? (totalDayChange / prevCloseValue) * 100 : 0;
 
   return {
     available: true,

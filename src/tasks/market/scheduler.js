@@ -90,7 +90,7 @@ async function runScheduledUpdate(updateType) {
 
     logger.info(`${updateType} update sent successfully`);
   } catch (error) {
-    logger.error(`Failed to send ${updateType} update:`, error.message);
+    logger.error(`Failed to send ${updateType} update: ${error.message}\n${error.stack}`);
   }
 }
 
@@ -118,49 +118,114 @@ export function getSchedulerStatus() {
 }
 
 /**
- * Calculate next run times
+ * Calculate next run times, returning correct UTC timestamps regardless of server timezone.
  */
 function getNextRunTimes() {
-  const now = getEasternTime();
+  const now = new Date();
   const times = [];
 
-  // Find next pre-market (8 AM ET, weekday)
-  let nextPreMarket = new Date(now);
-  nextPreMarket.setHours(8, 0, 0, 0);
-  if (now.getHours() >= 8) {
-    nextPreMarket.setDate(nextPreMarket.getDate() + 1);
+  // Get ET date/time components from a real Date
+  function getETComponents(date) {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      weekday: 'long',
+      hour12: false,
+    }).formatToParts(date).reduce((acc, p) => {
+      if (p.type !== 'literal') acc[p.type] = p.value;
+      return acc;
+    }, {});
   }
-  while (!isMarketDay(nextPreMarket)) {
-    nextPreMarket.setDate(nextPreMarket.getDate() + 1);
-  }
-  times.push({ type: 'pre-market', time: nextPreMarket.toISOString() });
 
-  // Find next post-market (4:30 PM ET, weekday)
-  let nextPostMarket = new Date(now);
-  nextPostMarket.setHours(16, 30, 0, 0);
-  if (now.getHours() >= 16 && now.getMinutes() >= 30) {
-    nextPostMarket.setDate(nextPostMarket.getDate() + 1);
+  // Get the UTC Date for targetHour:targetMinute ET on the ET calendar day of 'date'.
+  // Tries both EST (-05:00) and EDT (-04:00) offsets and picks whichever verifies correctly.
+  function utcForETTime(date, hour, minute) {
+    const et = getETComponents(date);
+    const dateStr = `${et.year}-${et.month}-${et.day}`;
+    const timeStr = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+    for (const offset of ['-05:00', '-04:00']) {
+      const candidate = new Date(`${dateStr}T${timeStr}${offset}`);
+      const verify = getETComponents(candidate);
+      if (parseInt(verify.hour) % 24 === hour && parseInt(verify.minute) === minute) {
+        return candidate;
+      }
+    }
+    return new Date(`${dateStr}T${timeStr}-05:00`); // fallback
   }
-  while (!isMarketDay(nextPostMarket)) {
-    nextPostMarket.setDate(nextPostMarket.getDate() + 1);
-  }
-  times.push({ type: 'post-market', time: nextPostMarket.toISOString() });
 
-  // Find next weekly (9 AM ET, Saturday)
-  let nextWeekly = new Date(now);
-  nextWeekly.setHours(9, 0, 0, 0);
-  const daysUntilSaturday = (6 - now.getDay() + 7) % 7;
-  nextWeekly.setDate(nextWeekly.getDate() + (daysUntilSaturday === 0 && now.getHours() >= 9 ? 7 : daysUntilSaturday));
-  times.push({ type: 'weekly', time: nextWeekly.toISOString() });
+  // Find the next occurrence of targetHour:targetMinute ET that satisfies filter(utcDate)
+  function findNext(targetHour, targetMinute, filter) {
+    for (let offset = 0; offset <= 14; offset++) {
+      const candidate = new Date(now.getTime() + offset * 24 * 60 * 60 * 1000);
+      const target = utcForETTime(candidate, targetHour, targetMinute);
+      if (target > now && filter(target)) return target;
+    }
+    return null;
+  }
+
+  const nextPre = findNext(8, 0, isMarketDay);
+  if (nextPre) times.push({ type: 'pre-market', time: nextPre.toISOString() });
+
+  const nextPost = findNext(16, 30, isMarketDay);
+  if (nextPost) times.push({ type: 'post-market', time: nextPost.toISOString() });
+
+  // Weekly: 9 AM ET on Saturday
+  const nextWeekly = findNext(9, 0, (d) => getETComponents(d).weekday === 'Saturday');
+  if (nextWeekly) times.push({ type: 'weekly', time: nextWeekly.toISOString() });
 
   return times;
 }
 
 /**
- * Manually trigger an update (for testing)
+ * Manually trigger an update via the scheduled send path (bypasses market day check)
  */
 export async function triggerUpdate(updateType) {
   return runScheduledUpdate(updateType);
+}
+
+/**
+ * Send a direct ping via the scheduled send path (no market check, no update generation)
+ * Used to test whether sendFunction and targetUserId are wired up correctly.
+ */
+export async function sendSchedulerPing() {
+  if (!sendFunction || !targetUserId) {
+    throw new Error(`Scheduler not configured - sendFunction: ${!!sendFunction}, targetUserId: ${targetUserId}`);
+  }
+  await sendFunction({
+    type: 'text',
+    userId: targetUserId,
+    text: `🔔 Scheduler ping test\ntargetUserId: ${targetUserId}\ntime: ${new Date().toISOString()}`,
+  });
+}
+
+/**
+ * Register a one-time cron job that fires in N minutes and sends a ping.
+ * Used to verify cron is actually triggering on this machine.
+ */
+export function scheduleTestIn(minutes = 3) {
+  const fireAt = new Date(Date.now() + minutes * 60 * 1000);
+  const m = fireAt.getUTCMinutes();
+  const h = fireAt.getUTCHours();
+  const d = fireAt.getUTCDate();
+  const mon = fireAt.getUTCMonth() + 1;
+
+  const pattern = `${m} ${h} ${d} ${mon} *`;
+  logger.info(`Scheduling test cron at UTC ${h}:${String(m).padStart(2, '0')} (in ~${minutes} min), pattern: ${pattern}`);
+
+  const testJob = cron.schedule(pattern, async () => {
+    logger.info('Test cron job fired!');
+    try {
+      await sendSchedulerPing();
+      logger.info('Test ping sent successfully');
+    } catch (err) {
+      logger.error('Test ping failed:', err.message);
+    }
+    testJob.stop();
+  }, { timezone: 'UTC' }); // pattern is in UTC
 }
 
 export default {

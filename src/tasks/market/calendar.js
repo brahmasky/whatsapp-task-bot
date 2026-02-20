@@ -20,37 +20,61 @@ const MARKET_HOLIDAYS_2026 = [
 ];
 
 /**
- * Get current time in US Eastern timezone
+ * Get ET date/time components for any Date using Intl.DateTimeFormat.
+ * Returns { year, month, day, hour, minute, second, weekday } as strings.
+ * hour is 0-23 ('24' from some implementations is normalised to '0').
+ */
+function getETComponents(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    weekday: 'long',
+    hour12: false,
+  }).formatToParts(date);
+
+  return parts.reduce((acc, p) => {
+    if (p.type !== 'literal') acc[p.type] = p.value;
+    return acc;
+  }, {});
+}
+
+/**
+ * Get current time. Use getETComponents() for ET-specific day/hour checks.
  */
 export function getEasternTime() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  return new Date();
 }
 
 /**
- * Format date as YYYY-MM-DD
+ * Format date as YYYY-MM-DD in ET timezone
  */
 export function formatDate(date) {
-  return date.toISOString().split('T')[0];
+  const et = getETComponents(date);
+  return `${et.year}-${et.month}-${et.day}`;
 }
 
 /**
- * Check if a given date is a weekend
+ * Check if a given date falls on a weekend in ET timezone
  */
 export function isWeekend(date = new Date()) {
-  const day = date.getDay();
-  return day === 0 || day === 6; // Sunday = 0, Saturday = 6
+  const { weekday } = getETComponents(date);
+  return weekday === 'Saturday' || weekday === 'Sunday';
 }
 
 /**
- * Check if a given date is a US market holiday
+ * Check if a given date is a US market holiday (ET date)
  */
 export function isMarketHoliday(date = new Date()) {
-  const dateStr = formatDate(date);
-  return MARKET_HOLIDAYS_2026.includes(dateStr);
+  return MARKET_HOLIDAYS_2026.includes(formatDate(date));
 }
 
 /**
- * Check if US market is open today
+ * Check if US market is open today (ET)
  */
 export function isMarketDay(date = new Date()) {
   return !isWeekend(date) && !isMarketHoliday(date);
@@ -60,87 +84,54 @@ export function isMarketDay(date = new Date()) {
  * Check if we're currently in market hours (9:30 AM - 4:00 PM ET)
  */
 export function isMarketOpen() {
-  const now = getEasternTime();
+  const now = new Date();
+  if (!isMarketDay(now)) return false;
 
-  if (!isMarketDay(now)) {
-    return false;
-  }
+  const et = getETComponents(now);
+  const timeInMinutes = (parseInt(et.hour) % 24) * 60 + parseInt(et.minute);
 
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const timeInMinutes = hours * 60 + minutes;
-
-  const marketOpen = 9 * 60 + 30;  // 9:30 AM
-  const marketClose = 16 * 60;      // 4:00 PM
-
-  return timeInMinutes >= marketOpen && timeInMinutes < marketClose;
+  return timeInMinutes >= 9 * 60 + 30 && timeInMinutes < 16 * 60;
 }
 
 /**
  * Check if we're in pre-market hours (4:00 AM - 9:30 AM ET)
  */
 export function isPreMarket() {
-  const now = getEasternTime();
+  const now = new Date();
+  if (!isMarketDay(now)) return false;
 
-  if (!isMarketDay(now)) {
-    return false;
-  }
+  const et = getETComponents(now);
+  const timeInMinutes = (parseInt(et.hour) % 24) * 60 + parseInt(et.minute);
 
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const timeInMinutes = hours * 60 + minutes;
-
-  const preMarketOpen = 4 * 60;     // 4:00 AM
-  const marketOpen = 9 * 60 + 30;   // 9:30 AM
-
-  return timeInMinutes >= preMarketOpen && timeInMinutes < marketOpen;
+  return timeInMinutes >= 4 * 60 && timeInMinutes < 9 * 60 + 30;
 }
 
 /**
  * Check if we're in after-hours (4:00 PM - 8:00 PM ET)
  */
 export function isAfterHours() {
-  const now = getEasternTime();
+  const now = new Date();
+  if (!isMarketDay(now)) return false;
 
-  if (!isMarketDay(now)) {
-    return false;
-  }
+  const et = getETComponents(now);
+  const timeInMinutes = (parseInt(et.hour) % 24) * 60 + parseInt(et.minute);
 
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const timeInMinutes = hours * 60 + minutes;
-
-  const marketClose = 16 * 60;      // 4:00 PM
-  const afterHoursClose = 20 * 60;  // 8:00 PM
-
-  return timeInMinutes >= marketClose && timeInMinutes < afterHoursClose;
+  return timeInMinutes >= 16 * 60 && timeInMinutes < 20 * 60;
 }
 
 /**
  * Get market status string
  */
 export function getMarketStatus() {
-  const now = getEasternTime();
+  const now = new Date();
 
   if (!isMarketDay(now)) {
-    if (isWeekend(now)) {
-      return 'closed (weekend)';
-    }
-    return 'closed (holiday)';
+    return isWeekend(now) ? 'closed (weekend)' : 'closed (holiday)';
   }
 
-  if (isPreMarket()) {
-    return 'pre-market';
-  }
-
-  if (isMarketOpen()) {
-    return 'open';
-  }
-
-  if (isAfterHours()) {
-    return 'after-hours';
-  }
-
+  if (isPreMarket()) return 'pre-market';
+  if (isMarketOpen()) return 'open';
+  if (isAfterHours()) return 'after-hours';
   return 'closed';
 }
 
@@ -149,22 +140,14 @@ export function getMarketStatus() {
  * Returns null if market is open or it's not a market day
  */
 export function getMinutesUntilOpen() {
-  const now = getEasternTime();
+  const now = new Date();
+  if (!isMarketDay(now)) return null;
 
-  if (!isMarketDay(now)) {
-    return null;
-  }
+  const et = getETComponents(now);
+  const timeInMinutes = (parseInt(et.hour) % 24) * 60 + parseInt(et.minute);
+  const marketOpen = 9 * 60 + 30;
 
-  const hours = now.getHours();
-  const minutes = now.getMinutes();
-  const timeInMinutes = hours * 60 + minutes;
-
-  const marketOpen = 9 * 60 + 30; // 9:30 AM
-
-  if (timeInMinutes >= marketOpen) {
-    return null; // Market already open or closed
-  }
-
+  if (timeInMinutes >= marketOpen) return null;
   return marketOpen - timeInMinutes;
 }
 

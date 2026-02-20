@@ -242,6 +242,60 @@ export async function fetchMultipleQuotes(symbols) {
   return quotes;
 }
 
+/**
+ * Fetch 5 trading days of daily % change history for all sector ETFs + SPY.
+ * Uses range=15d to ensure we have enough prior closes to compute day-over-day changes.
+ * Returns: { SPY: [{date, changePercent}, ...], XLE: [...], ... }
+ */
+export async function fetchSectorHistory() {
+  const symbols = [...Object.keys(SECTOR_ETFS), 'SPY'];
+
+  logger.info(`Fetching 5-day history for ${symbols.length} sector ETFs + SPY...`);
+
+  const results = await Promise.all(
+    symbols.map(async (symbol, index) => {
+      await new Promise(resolve => setTimeout(resolve, index * 100));
+      try {
+        const url = `${YAHOO_FINANCE_URL}/${symbol}?interval=1d&range=15d`;
+        const response = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const data = await response.json();
+        const result = data.chart?.result?.[0];
+        if (!result) throw new Error('No data');
+
+        const timestamps = result.timestamp || [];
+        const closes = result.indicators?.quote?.[0]?.close || [];
+
+        // Build day-over-day % change for the last 5 complete trading days
+        const days = [];
+        for (let i = 1; i < closes.length; i++) {
+          const prev = closes[i - 1];
+          const curr = closes[i];
+          if (prev == null || curr == null) continue;
+          days.push({
+            date: new Date(timestamps[i] * 1000),
+            changePercent: parseFloat(((curr - prev) / prev * 100).toFixed(2)),
+          });
+        }
+
+        return { symbol, days: days.slice(-5) };
+      } catch (error) {
+        logger.warn(`Failed to fetch history for ${symbol}: ${error.message}`);
+        return { symbol, days: [] };
+      }
+    })
+  );
+
+  const history = {};
+  for (const { symbol, days } of results) {
+    history[symbol] = days;
+  }
+  return history;
+}
+
 export default {
   SECTOR_ETFS,
   INDICES,
@@ -251,4 +305,5 @@ export default {
   analyzeSectorRotation,
   fetchStockQuote,
   fetchMultipleQuotes,
+  fetchSectorHistory,
 };

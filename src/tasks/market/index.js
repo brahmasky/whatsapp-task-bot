@@ -12,7 +12,7 @@
  * - /market deep - Force deep analysis with research tools
  */
 
-import { fetchAllMarketData, analyzeSectorRotation } from './sector.service.js';
+import { fetchAllMarketData, analyzeSectorRotation, fetchSectorHistory } from './sector.service.js';
 import { getLivePortfolioValuation, compareToMarket, getSectorAlignment } from './valuation.service.js';
 import { analyzeMarket } from './analyzer.service.js';
 import { isMarketDay, getMarketStatus } from './calendar.js';
@@ -22,8 +22,9 @@ import {
   formatWeeklySummary,
   formatMarketCheck,
   formatStaleWarning,
+  formatScorecardUpdate,
 } from './formatter.js';
-import { initScheduler, getSchedulerStatus } from './scheduler.js';
+import { initScheduler, getSchedulerStatus, sendSchedulerPing, scheduleTestIn } from './scheduler.js';
 import { fetchMarketNews } from '../portfolio/news.service.js';
 import logger from '../../utils/logger.js';
 
@@ -137,6 +138,37 @@ export default {
         await ctx.reply(message);
         ctx.completeTask();
         return;
+      } else if (arg === 'scorecard' || arg === 'card') {
+        await ctx.reply('Fetching sector scorecard...');
+        try {
+          const history = await fetchSectorHistory();
+          const message = formatScorecardUpdate(history);
+          await ctx.reply(message);
+        } catch (err) {
+          logger.error('Scorecard failed:', err.message);
+          await ctx.reply(`Error fetching scorecard: ${err.message}`);
+        }
+        ctx.completeTask();
+        return;
+
+      } else if (arg === 'ping') {
+        // Test scheduler send path directly (no market check, no update generation)
+        try {
+          await sendSchedulerPing();
+          await ctx.reply('Scheduler ping sent via sendFunction. Did you receive a separate message?');
+        } catch (err) {
+          await ctx.reply(`Ping failed: ${err.message}`);
+        }
+        ctx.completeTask();
+        return;
+
+      } else if (arg === 'test') {
+        // Register a one-time cron job firing in 3 minutes
+        scheduleTestIn(3);
+        await ctx.reply('Test cron job registered — you should receive a ping message in ~3 minutes if cron is working.');
+        ctx.completeTask();
+        return;
+
       } else if (arg === 'status') {
         // Show scheduler status
         const status = getSchedulerStatus();

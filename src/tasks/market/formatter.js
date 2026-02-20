@@ -5,6 +5,7 @@
  */
 
 import { getMarketStatus, formatDate, getEasternTime } from './calendar.js';
+import { SECTOR_ETFS } from './sector.service.js';
 
 /**
  * Format pre-market update
@@ -242,6 +243,69 @@ export function formatMarketCheck(data) {
   }
 
   return msg;
+}
+
+/**
+ * Format sector scorecard
+ * Shows 5 trading days of each sector's daily % change vs SPY.
+ * 🟢 = outperformed SPY that day, 🔴 = underperformed
+ */
+export function formatScorecardUpdate(history) {
+  const spyDays = history['SPY'] || [];
+
+  if (spyDays.length === 0) {
+    return '📊 *Sector Scorecard*\n\nNo data available.';
+  }
+
+  // Date header labels (e.g. "Feb12")
+  const dateLabels = spyDays.map(d =>
+    d.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  );
+
+  const spyToday = spyDays[spyDays.length - 1];
+  const spySign = spyToday.changePercent >= 0 ? '+' : '';
+
+  let msg = `📊 *Sector Scorecard*\n`;
+  msg += `_🟢 beat SPY  🔴 lagged  (oldest → newest)_\n`;
+  msg += `_${dateLabels.join(' → ')}_\n`;
+  msg += `SPY: ${spySign}${spyToday.changePercent}% today\n\n`;
+
+  // Build sector rows with relative performance vs SPY
+  const rows = Object.entries(SECTOR_ETFS).map(([symbol, info]) => {
+    const days = history[symbol] || [];
+
+    const dots = spyDays.map((spyDay, i) => {
+      const sectorDay = days[i];
+      if (!sectorDay) return '⬜';
+      return sectorDay.changePercent >= spyDay.changePercent ? '🟢' : '🔴';
+    }).join('');
+
+    const todayChange = days[days.length - 1]?.changePercent ?? null;
+    const spyTodayChange = spyToday.changePercent;
+    const relVsSpy = todayChange !== null ? todayChange - spyTodayChange : -999;
+
+    // Trend from dot pattern (oldest=0, newest=last)
+    const greenCount = [...dots].filter(c => c === '🟢').length;
+    const recentGreen = [...dots].slice(-2).filter(c => c === '🟢').length;
+    const earlyGreen = [...dots].slice(0, 2).filter(c => c === '🟢').length;
+    let trend;
+    if (greenCount >= 4) trend = '↑';
+    else if (greenCount <= 1) trend = '↓';
+    else if (recentGreen > earlyGreen) trend = '↗';
+    else if (recentGreen < earlyGreen) trend = '↘';
+    else trend = '→';
+
+    const sign = todayChange !== null ? (todayChange >= 0 ? '+' : '') : '';
+    const changeStr = todayChange !== null ? `${sign}${todayChange}%` : 'N/A';
+
+    return { symbol, info, dots, changeStr, relVsSpy, trend };
+  }).sort((a, b) => b.relVsSpy - a.relVsSpy);
+
+  for (const row of rows) {
+    msg += `${row.symbol} ${row.info.emoji} ${row.dots} ${row.changeStr} ${row.trend}\n`;
+  }
+
+  return msg.trimEnd();
 }
 
 /**

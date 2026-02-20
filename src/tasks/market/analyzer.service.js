@@ -269,7 +269,7 @@ export async function analyzeMarket(data, updateType = 'post-market', forceLevel
       break;
 
     case 'haiku':
-      insight = await generateClaudeAnalysis(data, updateType, 'claude-haiku-3-5-20241022');
+      insight = await generateClaudeAnalysis(data, updateType, 'claude-haiku-4-5-20251001');
       analysisMethod = 'claude-haiku';
       break;
 
