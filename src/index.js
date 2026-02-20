@@ -13,6 +13,7 @@ import systemTask from './tasks/system/index.js';
 import portfolioTask from './tasks/portfolio/index.js';
 import marketTask, { initScheduler } from './tasks/market/index.js';
 import { stopScheduler } from './tasks/market/scheduler.js';
+import researchTask from './tasks/research/index.js';
 
 /**
  * WhatsApp Task Bot
@@ -29,6 +30,7 @@ async function main() {
   taskRegistry.register(systemTask);
   taskRegistry.register(portfolioTask);
   taskRegistry.register(marketTask);
+  taskRegistry.register(researchTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway
@@ -63,8 +65,8 @@ async function main() {
 
   // Initialize market update scheduler
   // Send to first allowed user (self) for scheduled updates
-  const schedulerUserId = config.allowedUsers?.[0]
-    ? `whatsapp:${config.allowedUsers[0]}@s.whatsapp.net`
+  const schedulerUserId = config.bot.allowedUsers?.[0]
+    ? `whatsapp:${config.bot.allowedUsers[0]}@s.whatsapp.net`
     : null;
 
   if (schedulerUserId) {

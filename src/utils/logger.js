@@ -1,4 +1,8 @@
 // Simple console logger with timestamps and color coding
+// Set LOG_LEVEL=debug to see debug output (default: info)
+
+const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const LOG_LEVEL = LEVELS[process.env.LOG_LEVEL?.toLowerCase()] ?? LEVELS.info;
 
 const colors = {
   reset: '\x1b[0m',
@@ -58,7 +62,9 @@ const logger = {
   },
 
   debug: (message, data) => {
-    console.log(formatMessage('DEBUG', message, data));
+    if (LOG_LEVEL <= LEVELS.debug) {
+      console.log(formatMessage('DEBUG', message, data));
+    }
   },
 
   success: (message, data) => {

@@ -19,6 +19,11 @@ const config = {
     apiKey: process.env.ANTHROPIC_API_KEY,
   },
 
+  // Financial Modeling Prep (fundamentals for /research)
+  fmp: {
+    apiKey: process.env.FMP_API_KEY,
+  },
+
   // Playwright settings
   playwright: {
     headless: process.env.HEADLESS !== 'false',
