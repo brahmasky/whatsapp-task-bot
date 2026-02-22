@@ -10,10 +10,10 @@
  * Cost: ~$0.05/call (Sonnet × 3 turns)
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 import { fetchMarketNews } from '../portfolio/news.service.js';
+import { runAgentLoop } from '../../shared/agent.service.js';
 
 const MAX_ITERATIONS = 4;
 const MAX_TOKENS_PER_TURN = 2000;
@@ -55,9 +55,9 @@ Rules:
 - SENTIMENT must stay [PENDING] until you have called get_news at least once
 
 ## Scoring dimensions (0-25 each)
-- Valuation: P/E vs sector norms, P/B, discount/premium to analyst target
-- Quality: profit margins, ROE, FCF generation, balance sheet strength
-- Momentum: price position in 52-week range, recent price action
+- Valuation: P/E vs sector norms, P/B, discount/premium to analyst target. If data is N/A, score 12 (neutral) — missing data is not a bearish signal.
+- Quality: profit margins, ROE, FCF generation, balance sheet strength. If data is N/A, score 12 (neutral).
+- Momentum: price position in 52-week range AND recent price action. IMPORTANT: being near the 52-week low on a profitable, established company may indicate a value entry point — weigh this carefully rather than treating it as automatically bearish.
 - Sentiment: news tone and recency of catalysts ONLY — do not reuse analyst counts already in Valuation
 
 ## Final output
@@ -156,98 +156,50 @@ export async function runResearchAgent(symbol, fundamentals) {
     return null;
   }
 
-  const client = new Anthropic({ apiKey: config.claude.apiKey });
-
   const messages = [
     { role: 'user', content: formatFundamentalsForAgent(symbol, fundamentals) },
   ];
 
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let toolCallCount = 0;
-
   logger.info(`Starting research agent loop for ${symbol}...`);
 
   try {
-    for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: MAX_TOKENS_PER_TURN,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages,
-      });
-
-      totalInputTokens += response.usage?.input_tokens || 0;
-      totalOutputTokens += response.usage?.output_tokens || 0;
-
-      if (response.stop_reason === 'end_turn') {
-        const raw = response.content
-          .filter(b => b.type === 'text')
-          .map(b => b.text)
-          .join('\n');
-
-        const text = processScatchpad(raw, i + 1);
-        const result = parseAgentOutput(text);
-        if (!result) {
-          logger.warn('Agent produced unparseable output, raw:', text.substring(0, 200));
-          return null;
+    const { text: rawText, usage, toolCalls } = await runAgentLoop({
+      model: 'claude-sonnet-4-20250514',
+      system: SYSTEM_PROMPT,
+      messages,
+      tools: TOOLS,
+      maxIterations: MAX_ITERATIONS,
+      maxTokens: MAX_TOKENS_PER_TURN,
+      executeTool: async (name, input) => {
+        if (name === 'get_news') {
+          const newsMap = await fetchMarketNews([input.symbol.toUpperCase()], 1);
+          return newsMap[input.symbol.toUpperCase()] || [];
         }
+        throw new Error(`Unknown tool: ${name}`);
+      },
+      onToolCall: (name, input) => {
+        logger.info(`Research agent calling: ${name}(${input.symbol || ''})`);
+      },
+      onTurnText: (text, iteration) => {
+        processScatchpad(text, iteration); // log scratchpad from mid-turn text blocks
+      },
+    });
 
-        logger.info(`Research agent done: score=${result.score}, ${toolCallCount} tool calls, ${totalInputTokens + totalOutputTokens} tokens`);
-        return { ...result, toolCalls: toolCallCount };
-      }
-
-      if (response.stop_reason === 'tool_use') {
-        const assistantContent = response.content;
-
-        // Log any scratchpad present in this tool-use turn
-        const textBlock = assistantContent.find(b => b.type === 'text');
-        if (textBlock) processScatchpad(textBlock.text, i + 1);
-
-        messages.push({ role: 'assistant', content: assistantContent });
-
-        const toolResults = [];
-
-        for (const block of assistantContent) {
-          if (block.type !== 'tool_use') continue;
-
-          toolCallCount++;
-          logger.info(`Research agent calling: ${block.name}(${block.input.symbol || ''})`);
-
-          try {
-            let result;
-            if (block.name === 'get_news') {
-              const newsMap = await fetchMarketNews([block.input.symbol.toUpperCase()], 1);
-              result = newsMap[block.input.symbol.toUpperCase()] || [];
-            } else {
-              result = { error: `Unknown tool: ${block.name}` };
-            }
-
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(result),
-            });
-          } catch (err) {
-            logger.error(`Tool ${block.name} failed: ${err.message}`);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify({ error: err.message }),
-              is_error: true,
-            });
-          }
-        }
-
-        messages.push({ role: 'user', content: toolResults });
-      }
+    const cleanText = processScatchpad(rawText, 'final');
+    const result = parseAgentOutput(cleanText);
+    if (!result) {
+      logger.warn('Agent produced unparseable output, raw:', cleanText.substring(0, 200));
+      return null;
     }
 
-    logger.warn(`Research agent hit max iterations (${MAX_ITERATIONS}) for ${symbol}`);
-    return null;
+    logger.info(`Research agent done: score=${result.score}, ${toolCalls} tool calls, ${usage.inputTokens + usage.outputTokens} tokens`);
+    return { ...result, toolCalls };
   } catch (err) {
-    logger.error(`Research agent failed for ${symbol}: ${err.message}`);
+    if (err.message.includes('exceeded maximum iterations')) {
+      logger.warn(`Research agent hit max iterations (${MAX_ITERATIONS}) for ${symbol}`);
+    } else {
+      logger.error(`Research agent failed for ${symbol}: ${err.message}`);
+    }
     return null;
   }
 }

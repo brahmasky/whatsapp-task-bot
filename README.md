@@ -11,7 +11,8 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 - **Secure Credentials** - macOS Keychain integration for password storage
 - **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration
 - **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
-- **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP
+- **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP fallback
+- **Price Alerts & Trading** - Price zone monitoring with bracket order execution via E*TRADE
 - **System Monitoring** - macOS CPU, memory, disk, and temperature stats
 
 ## Setup
@@ -42,30 +43,42 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 │  WhatsApp   │────▶│   Gateway   │────▶│   Router     │────▶│    Tasks    │
 │   User      │     │  (Channel)  │     │  (Auth/Cmd)  │     │  Registry   │
 └─────────────┘     └─────────────┘     └──────────────┘     └──────┬──────┘
-                                                                    │
-                    ┌──────────────────────────────────────────────────────────────┐
-                    │                       │                │                  │
-                    ▼                       ▼                ▼                  ▼
-             ┌────────────┐          ┌────────────┐   ┌────────────┐   ┌────────────────┐
-             │  /invoice  │          │  /system   │   │  /market   │   │   /portfolio   │
-             │            │          │            │   │            │   │                │
-             │ Playwright │          │ macOS stat │   │ Scheduled  │   │  Claude Agent  │
-             │ + Keychain │          │ CPU/Mem/   │   │ Updates +  │   │  + MCP Tools   │
-             │ + Email    │          │ Temp/Login │   │ Deep Agent │   │                │
-             └────────────┘          └────────────┘   └─────┬──────┘   └───────┬────────┘
-                                                            │                  │
-                                                            └────────┬─────────┘
-                                                        ┌────────────┴────────────┐
-                                                        ▼                         ▼
-                                                 ┌────────────┐            ┌────────────┐
-                                                 │  E*TRADE   │            │  Research  │
-                                                 │ MCP Server │            │ MCP Server │
-                                                 └─────┬──────┘            └─────┬──────┘
-                                                       ▼                         ▼
-                                                 ┌────────────┐            ┌────────────┐
-                                                 │ E*TRADE API│            │ News/Quote │
-                                                 │ (OAuth)    │            │ APIs       │
-                                                 └────────────┘            └────────────┘
+                                                                     │
+              ┌──────────────────────────────────────────────────────────────────────┐
+              │              │               │              │                │        │
+              ▼              ▼               ▼              ▼                ▼        │
+        ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌──────────┐  ┌──────────────┐  │
+        │ /invoice │  │ /system  │  │ /portfolio │  │ /market  │  │  /research   │  │
+        │Playwright│  │ macOS    │  │   Claude   │  │Scheduled │  │ Sonnet Agent │  │
+        │+ Keychain│  │  Stats   │  │   Agent   │  │+ Deep AI │  │ Yahoo + FMP  │  │
+        └──────────┘  └──────────┘  └─────┬──────┘  └────┬─────┘  └──────────────┘  │
+                                          │              │                            │
+              ┌───────────────────────────┘              │          ┌──────────────┐  │
+              │                                          │          │    /trade    │◄─┘
+              │                                          │          │ Price Alerts │
+              │                                          │          │+ E*T Orders  │
+              │                                          │          └──────┬───────┘
+              │                                          │                 │
+              │          ┌───────────────────────────────┘                 │
+              ▼          ▼                                                  │
+    ┌─────────────────────────────────────┐                                │
+    │          src/shared/                │◄───────────────────────────────┘
+    │  yahoo.service  │  agent.service    │
+    │  etrade.helper  │  auth.service     │
+    └────────┬────────────────┬───────────┘
+             │                │
+             ▼                ▼
+    ┌──────────────┐  ┌───────────────────┐
+    │  MCP Servers │  │  External APIs    │
+    │  etrade      │  │  Yahoo Finance    │
+    │  research    │  │  E*TRADE (OAuth)  │
+    └──────┬───────┘  │  Google News      │
+           │          │  FMP (fallback)   │
+           ▼          └───────────────────┘
+    ┌──────────────┐
+    │ Claude Agent │
+    │  tool calls  │
+    └──────────────┘
 ```
 
 ## Available Commands
@@ -86,6 +99,10 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 | `/market deep` | Force deep analysis with research tools |
 | `/market status` | Scheduler info and next update times |
 | `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals and recommendation |
+| `/trade TICKER` | Set a price alert + bracket order plan (buy zone, take profit, stop loss) |
+| `/trade list` | Show active price alerts and pending fills |
+| `/trade cancel TICKER` | Cancel a price alert |
+| `/trade fill TICKER` | Simulate a fill for sandbox testing |
 
 ### Research Scoring
 
@@ -98,8 +115,26 @@ The `/research` command runs a Sonnet agent loop that scores a stock across four
 | Momentum | 52-week range position, recent price action | 25 |
 | Sentiment | News tone and recency of catalysts | 25 |
 
-Data sources: Yahoo Finance (price/52w range, free) + FMP `/stable/` API (fundamentals, free tier = 250 calls/day).
-Requires `FMP_API_KEY` and `ANTHROPIC_API_KEY`. Est. cost: ~$0.05/call.
+Data sources: Yahoo Finance `v10/quoteSummary` (primary, no key needed, better international coverage) with FMP `/stable/` API as fallback when Yahoo returns sparse data (free tier = 250 calls/day).
+Requires `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional but recommended. Est. cost: ~$0.05/call.
+
+### Price Alerts & Trading (/trade)
+
+The `/trade` command monitors stock prices and executes bracket orders via E*TRADE.
+
+**Flow:**
+1. `/trade UBER` — fetch current price, prompt for plan
+2. Enter plan: `buy 70 72.50 tp 81.30 sl 68 budget 1000`
+3. Bot saves alert, monitors price every 60 seconds
+4. When price enters buy zone — alert fires with trend sparkline
+5. Reply `confirm` — bot places a GTC limit buy order on E*TRADE
+6. When buy fills — bot automatically places take profit + stop loss orders
+
+**Order sequencing:** BUY is placed first. TP and SL are only placed after the BUY is confirmed EXECUTED — avoids accidental short sell.
+
+**Token expiry:** E*TRADE OAuth tokens expire at midnight ET. If expired, `/trade` handles re-authentication inline without needing to switch to `/portfolio`.
+
+**Sandbox testing:** Use `/trade fill TICKER` to simulate a fill and trigger exit order placement (sandbox only — blocked in production).
 
 ### Market Analysis Tiers
 
@@ -133,7 +168,7 @@ Scheduled updates run automatically on market days:
 | `ETRADE_CONSUMER_SECRET` | E*TRADE API consumer secret |
 | `ETRADE_SANDBOX` | `false` for production E*TRADE API |
 | `ANTHROPIC_API_KEY` | Claude API key for portfolio/market/research analysis |
-| `FMP_API_KEY` | Financial Modeling Prep key for `/research` fundamentals (free at financialmodelingprep.com) |
+| `FMP_API_KEY` | Financial Modeling Prep key — fallback for `/research` when Yahoo data is sparse (free tier: 250 calls/day) |
 | `LOG_LEVEL` | Log verbosity: `info` (default) or `debug` |
 
 ## Adding Tasks

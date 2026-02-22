@@ -6,10 +6,10 @@
  * Only triggers on extreme days (SPY > 2.5%, etc.) to keep costs low.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 import { getResearchClient } from '../../mcp/client.js';
+import { runAgentLoop } from '../../shared/agent.service.js';
 
 const TOOLS = [
   {
@@ -137,86 +137,34 @@ export async function runDeepAnalysis(data, updateType) {
     return null;
   }
 
-  const client = new Anthropic({
-    apiKey: config.claude.apiKey,
-  });
-
   const messages = [
     { role: 'user', content: formatDataForAgent(data, updateType) },
   ];
 
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let toolCallCount = 0;
-
   logger.info('Starting deep market analysis agent loop...');
 
   try {
-    for (let i = 0; i < MAX_ITERATIONS; i++) {
-      const response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: MAX_TOKENS_PER_TURN,
-        system: SYSTEM_PROMPT,
-        tools: TOOLS,
-        messages,
-      });
+    const { text, usage, toolCalls } = await runAgentLoop({
+      model: 'claude-sonnet-4-20250514',
+      system: SYSTEM_PROMPT,
+      messages,
+      tools: TOOLS,
+      maxIterations: MAX_ITERATIONS,
+      maxTokens: MAX_TOKENS_PER_TURN,
+      executeTool: executeResearchTool,
+      onToolCall: (name, input) => {
+        logger.info(`Deep analyzer calling: ${name}${input.symbol ? ` (${input.symbol})` : ''}`);
+      },
+    });
 
-      totalInputTokens += response.usage?.input_tokens || 0;
-      totalOutputTokens += response.usage?.output_tokens || 0;
-
-      if (response.stop_reason === 'end_turn') {
-        const text = response.content
-          .filter(block => block.type === 'text')
-          .map(block => block.text)
-          .join('\n');
-
-        logger.info(`Deep analysis completed: ${toolCallCount} tool calls, ${totalInputTokens + totalOutputTokens} tokens`);
-
-        return {
-          text,
-          tokens: { input: totalInputTokens, output: totalOutputTokens },
-          toolCalls: toolCallCount,
-        };
-      }
-
-      if (response.stop_reason === 'tool_use') {
-        const assistantContent = response.content;
-        messages.push({ role: 'assistant', content: assistantContent });
-
-        const toolResults = [];
-
-        for (const block of assistantContent) {
-          if (block.type === 'tool_use') {
-            toolCallCount++;
-            logger.info(`Deep analyzer calling: ${block.name}${block.input.symbol ? ` (${block.input.symbol})` : ''}`);
-
-            try {
-              const result = await executeResearchTool(block.name, block.input);
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: JSON.stringify(result),
-              });
-            } catch (error) {
-              logger.error(`Tool ${block.name} failed:`, error.message);
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: block.id,
-                content: JSON.stringify({ error: error.message }),
-                is_error: true,
-              });
-            }
-          }
-        }
-
-        messages.push({ role: 'user', content: toolResults });
-      }
+    logger.info(`Deep analysis completed: ${toolCalls} tool calls, ${usage.inputTokens + usage.outputTokens} tokens`);
+    return { text, tokens: { input: usage.inputTokens, output: usage.outputTokens }, toolCalls };
+  } catch (err) {
+    if (err.message.includes('exceeded maximum iterations')) {
+      logger.warn('Deep analysis hit max iterations');
+    } else {
+      logger.error('Deep analysis failed:', err.message);
     }
-
-    logger.warn('Deep analysis hit max iterations');
-    return null;
-  } catch (error) {
-    logger.error('Deep analysis failed:', error.message);
     return null;
   }
 }

@@ -6,6 +6,7 @@
  */
 
 import logger from '../../utils/logger.js';
+import { fetchQuote } from '../../shared/yahoo.service.js';
 
 const YAHOO_FINANCE_URL = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
@@ -32,60 +33,7 @@ export const INDICES = {
   IWM: { name: 'Russell 2000', emoji: '📉' },
 };
 
-/**
- * Fetch quote data for a single symbol
- */
-async function fetchQuote(symbol) {
-  try {
-    const url = `${YAHOO_FINANCE_URL}/${symbol}?interval=1d&range=5d`;
-
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const result = data.chart?.result?.[0];
-
-    if (!result) {
-      throw new Error('No data');
-    }
-
-    const meta = result.meta;
-    const quote = result.indicators?.quote?.[0];
-    const closes = quote?.close || [];
-
-    // Get previous close (second to last in 5-day range)
-    const previousClose = closes[closes.length - 2] || meta.chartPreviousClose;
-    const currentPrice = meta.regularMarketPrice;
-    const change = currentPrice - previousClose;
-    const changePercent = (change / previousClose) * 100;
-
-    return {
-      symbol,
-      price: currentPrice,
-      previousClose,
-      change: parseFloat(change.toFixed(2)),
-      changePercent: parseFloat(changePercent.toFixed(2)),
-      dayHigh: meta.regularMarketDayHigh,
-      dayLow: meta.regularMarketDayLow,
-      volume: meta.regularMarketVolume,
-      fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
-      fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
-    };
-  } catch (error) {
-    logger.warn(`Failed to fetch quote for ${symbol}: ${error.message}`);
-    return {
-      symbol,
-      error: error.message,
-    };
-  }
-}
+// fetchQuote is provided by the shared Yahoo service (with 60s cache)
 
 /**
  * Fetch all sector ETF data

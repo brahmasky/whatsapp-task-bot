@@ -25,59 +25,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { fetchMarketNews } from '../tasks/portfolio/news.service.js';
+import { fetchQuote } from '../shared/yahoo.service.js';
 
-// Yahoo Finance API (no key required for basic data)
-const YAHOO_FINANCE_URL = 'https://query1.finance.yahoo.com/v8/finance/chart';
 const YAHOO_QUOTE_URL = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
-
-/**
- * Fetch stock quote from Yahoo Finance
- */
-async function fetchStockQuote(symbol) {
-  const url = `${YAHOO_FINANCE_URL}/${symbol}?interval=1d&range=5d`;
-
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to fetch quote for ${symbol}: ${response.status}`);
-  }
-
-  const data = await response.json();
-  const result = data.chart?.result?.[0];
-
-  if (!result) {
-    throw new Error(`No data found for ${symbol}`);
-  }
-
-  const meta = result.meta;
-  const quote = result.indicators?.quote?.[0];
-  const closes = quote?.close || [];
-  const previousClose = closes[closes.length - 2] || meta.chartPreviousClose;
-  const currentPrice = meta.regularMarketPrice;
-  const change = currentPrice - previousClose;
-  const changePercent = (change / previousClose) * 100;
-
-  return {
-    symbol: meta.symbol,
-    name: meta.shortName || meta.longName || symbol,
-    exchange: meta.exchangeName,
-    currency: meta.currency,
-    currentPrice,
-    previousClose,
-    change: change.toFixed(2),
-    changePercent: changePercent.toFixed(2) + '%',
-    dayHigh: meta.regularMarketDayHigh,
-    dayLow: meta.regularMarketDayLow,
-    volume: meta.regularMarketVolume,
-    marketCap: meta.marketCap,
-    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
-    fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
-  };
-}
 
 /**
  * Fetch company profile and key stats from Yahoo Finance
@@ -187,7 +137,16 @@ function createServer() {
       symbol: z.string().describe('The stock ticker symbol (e.g., AAPL, GOOG, TSLA)'),
     },
     async ({ symbol }) => {
-      const quote = await fetchStockQuote(symbol.toUpperCase());
+      const q = await fetchQuote(symbol.toUpperCase());
+      if (q.error) throw new Error(q.error);
+      // Preserve existing MCP output shape for Claude Desktop consumers
+      const quote = {
+        symbol: q.symbol, name: q.name, exchange: q.exchange, currency: q.currency,
+        currentPrice: q.price, previousClose: q.previousClose,
+        change: q.change, changePercent: q.changePercent != null ? q.changePercent.toFixed(2) + '%' : null,
+        dayHigh: q.dayHigh, dayLow: q.dayLow, volume: q.volume, marketCap: q.marketCap,
+        fiftyTwoWeekHigh: q.fiftyTwoWeekHigh, fiftyTwoWeekLow: q.fiftyTwoWeekLow,
+      };
       return { content: [{ type: 'text', text: JSON.stringify(quote, null, 2) }] };
     }
   );
@@ -214,15 +173,8 @@ function createServer() {
     },
     async ({ symbols }) => {
       const quotes = await Promise.all(
-        symbols.map(async (symbol) => {
-          try {
-            return await fetchStockQuote(symbol.toUpperCase());
-          } catch (error) {
-            return { symbol: symbol.toUpperCase(), error: error.message };
-          }
-        })
+        symbols.map(symbol => fetchQuote(symbol.toUpperCase()))
       );
-
       return { content: [{ type: 'text', text: JSON.stringify(quotes, null, 2) }] };
     }
   );
@@ -238,7 +190,7 @@ function createServer() {
       const upperSymbol = symbol.toUpperCase();
 
       const [quote, profile, newsMap] = await Promise.all([
-        fetchStockQuote(upperSymbol).catch(e => ({ error: e.message })),
+        fetchQuote(upperSymbol),
         fetchCompanyProfile(upperSymbol).catch(e => ({ error: e.message })),
         fetchMarketNews([upperSymbol], 1).catch(() => ({})),
       ]);

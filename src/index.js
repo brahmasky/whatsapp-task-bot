@@ -14,6 +14,7 @@ import portfolioTask from './tasks/portfolio/index.js';
 import marketTask, { initScheduler } from './tasks/market/index.js';
 import { stopScheduler } from './tasks/market/scheduler.js';
 import researchTask from './tasks/research/index.js';
+import tradeTask, { initAlertMonitor, stopAlertMonitor } from './tasks/trade/index.js';
 
 /**
  * WhatsApp Task Bot
@@ -31,6 +32,7 @@ async function main() {
   taskRegistry.register(portfolioTask);
   taskRegistry.register(marketTask);
   taskRegistry.register(researchTask);
+  taskRegistry.register(tradeTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway
@@ -72,8 +74,9 @@ async function main() {
   if (schedulerUserId) {
     const sendFn = gateway.createSender('whatsapp');
     initScheduler(sendFn, schedulerUserId);
+    initAlertMonitor(sendFn);
   } else {
-    logger.warn('No allowed users configured - market scheduler disabled');
+    logger.warn('No allowed users configured - market scheduler and trade alerts disabled');
   }
 
   // Graceful shutdown
@@ -94,8 +97,9 @@ async function main() {
       stateManager.clearTask(userId);
     }
 
-    // Stop market scheduler
+    // Stop market scheduler and trade alert monitor
     stopScheduler();
+    stopAlertMonitor();
 
     // Disconnect MCP clients
     await disconnectMCPClients();

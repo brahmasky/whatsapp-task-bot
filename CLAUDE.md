@@ -156,6 +156,25 @@ No test or lint scripts are configured.
 
 **Global Commands:** `/help`, `/tasks`, `/cancel`, `/status`
 
+## Shared Services (`src/shared/`)
+
+**Before implementing anything in a new task, check here first.** If more than one task might need something, it belongs in `src/shared/`.
+
+| Service | File | Use for |
+|---------|------|---------|
+| Yahoo Finance quotes | `shared/yahoo.service.js` | Any price fetch — `fetchQuote(symbol)`, 60s cache, never throws |
+| Claude agent loop | `shared/agent.service.js` | Any agentic tool-use loop — `runAgentLoop({model, system, messages, tools, maxIterations, maxTokens, executeTool, onToolCall?, onTurnText?})` |
+| E*TRADE auth | `shared/etrade.helper.js` | Get authenticated service — `getAuthenticatedService()`, loads tokens from keychain |
+| OAuth flow | `shared/auth.service.js` | PIN-based OAuth for E*TRADE — `startAuthFlow(userId)`, `exchangePin(userId, pin)`, `cleanupAuthFlow(userId)` |
+| News fetching | `tasks/portfolio/news.service.js` | Google News RSS — `fetchMarketNews([symbols], maxSymbols)` |
+
+**New task checklist — before writing any fetch or loop code:**
+- Fetching a stock price? → `shared/yahoo.service.js`
+- Running a Claude agent with tools? → `shared/agent.service.js`
+- Talking to E*TRADE API? → `shared/etrade.helper.js`
+- Running E*TRADE OAuth? → `shared/auth.service.js`
+- Fetching news? → `tasks/portfolio/news.service.js`
+
 ## Adding a New Task
 
 1. Create task module in `src/tasks/taskname/index.js`
@@ -255,11 +274,12 @@ The `/research TICKER` command fetches fundamentals and runs a Sonnet agent loop
 **Usage:** `/research AAPL`
 
 **Architecture:**
-1. Fetch price + 52w range from Yahoo Finance `v8/finance/chart` (no key needed)
-2. Fetch 5 FMP `/stable/` endpoints in parallel: profile, ratios-ttm, quote, key-metrics-ttm, price-target-consensus
-3. Run Sonnet agent loop (max 4 turns) with scratchpad reasoning
-4. Agent calls `get_news` tool (inline via Google News RSS) for sentiment
-5. Agent outputs JSON with score, 4 sub-scores, recommendation, summary
+1. Fetch price + 52w range from Yahoo Finance `v8/finance/chart` via `shared/yahoo.service.js`
+2. Fetch fundamentals from Yahoo `v10/finance/quoteSummary` (primary — no key, better international coverage)
+3. Fall back to FMP `/stable/` endpoints if Yahoo returns sparse data (key required, 250 calls/day)
+4. Run Sonnet agent loop (max 4 turns) via `shared/agent.service.js` with scratchpad reasoning
+5. Agent calls `get_news` tool (inline via Google News RSS) for sentiment
+6. Agent outputs JSON with score, 4 sub-scores, recommendation, summary
 
 **Scoring dimensions (0-25 each):**
 - Valuation: P/E vs norms, P/B, analyst target upside

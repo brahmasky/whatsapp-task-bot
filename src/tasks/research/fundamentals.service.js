@@ -1,52 +1,80 @@
 /**
- * Fundamentals Service — Yahoo Finance + FMP
+ * Fundamentals Service — Yahoo Finance (primary) + FMP (fallback)
  *
- * Yahoo v8/finance/chart  → price, 52w range           (no key, no rate limit)
- * FMP /stable/profile     → sector, industry, beta, name
- * FMP /stable/ratios-ttm  → P/E, P/B, margins, ROE
- * FMP /stable/quote       → EPS, earnings date, shares outstanding
- * FMP /stable/key-metrics-ttm       → revenue/FCF per share (× shares = absolute total)
- * FMP /stable/price-target-consensus → analyst mean/high/low price targets
+ * Data sources:
+ *   Yahoo v8/finance/chart      → price, 52w range           (no key, cached 60s)
+ *   Yahoo v10/finance/quoteSummary → full fundamentals        (no key, better international coverage)
+ *   FMP /stable/ endpoints      → fallback if Yahoo sparse    (key required, 250 calls/day)
  *
- * All five FMP calls run in parallel (1 round-trip, 5 of 250 daily quota).
- * FMP fundamentals are best-effort — price always shows even if FMP fails.
+ * Yahoo is primary because it has better coverage for non-US companies (e.g. CHKP, TSM, BABA)
+ * and requires no API key. FMP is used as a fallback when Yahoo quoteSummary returns sparse data.
  *
- * Requires: FMP_API_KEY env var (free at financialmodelingprep.com)
+ * "Sparse" = fewer than 2 of the 5 key metrics are non-null
+ * (P/E, gross margin, net margin, ROE, revenue).
  */
 
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
+import { fetchQuote } from '../../shared/yahoo.service.js';
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+const YAHOO_QS_URL = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
 const FMP = 'https://financialmodelingprep.com/stable';
 
-// ─── Yahoo v8/chart (price) ───────────────────────────────────────────────────
+// ─── Yahoo v10/quoteSummary (primary fundamentals) ────────────────────────────
 
-async function fetchYahooQuote(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
+async function fetchYahooFundamentals(symbol) {
+  const modules = 'assetProfile,summaryDetail,financialData,defaultKeyStatistics,recommendationTrend';
+  const url = `${YAHOO_QS_URL}/${symbol}?modules=${modules}`;
   const resp = await fetch(url, { headers: { 'User-Agent': UA } });
-  if (!resp.ok) throw new Error(`Yahoo HTTP ${resp.status}`);
+
+  if (!resp.ok) throw new Error(`Yahoo quoteSummary HTTP ${resp.status}`);
 
   const data = await resp.json();
-  const result = data.chart?.result?.[0];
-  if (!result) throw new Error('Symbol not found');
+  const result = data.quoteSummary?.result?.[0];
+  if (!result) throw new Error('No data from Yahoo quoteSummary');
 
-  const meta = result.meta;
-  const closes = result.indicators?.quote?.[0]?.close || [];
-  const previousClose = closes[closes.length - 2] || meta.chartPreviousClose;
-  const price = meta.regularMarketPrice;
+  const profile  = result.assetProfile       || {};
+  const summary  = result.summaryDetail      || {};
+  const financial = result.financialData     || {};
+  const stats    = result.defaultKeyStatistics || {};
+  const recs     = result.recommendationTrend?.trend || [];
+  const rec0     = recs[0] || {};
+
+  // Yahoo wraps numeric values as { raw, fmt } — extract raw
+  const r = v => (v?.raw != null ? v.raw : null);
 
   return {
-    longName: meta.longName || meta.shortName || symbol,
-    price,
-    previousClose,
-    changePercent: previousClose ? ((price - previousClose) / previousClose) * 100 : null,
-    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh || null,
-    fiftyTwoWeekLow: meta.fiftyTwoWeekLow || null,
+    sector:    profile.sector   || null,
+    industry:  profile.industry || null,
+
+    beta:         r(summary.beta),
+    trailingPE:   r(summary.trailingPE),
+    forwardPE:    r(summary.forwardPE),
+    priceToBook:  r(summary.priceToBook),
+    trailingEps:  r(stats.trailingEps),
+
+    totalRevenue:   r(financial.totalRevenue),
+    grossMargins:   r(financial.grossMargins),
+    profitMargins:  r(financial.profitMargins),
+    returnOnEquity: r(financial.returnOnEquity),
+    freeCashflow:   r(financial.freeCashflow),
+
+    targetMeanPrice: r(financial.targetMeanPrice),
+    targetHighPrice: r(financial.targetHighPrice),
+    targetLowPrice:  r(financial.targetLowPrice),
+    recommendationKey: financial.recommendationKey || null,
+
+    // Combine strong buy/buy and strong sell/sell for simplicity
+    buyCount:  (rec0.strongBuy != null) ? rec0.strongBuy + (rec0.buy || 0) : null,
+    holdCount: rec0.hold ?? null,
+    sellCount: (rec0.strongSell != null) ? rec0.strongSell + (rec0.sell || 0) : null,
+
+    nextEarningsDate: null,
   };
 }
 
-// ─── FMP helpers ──────────────────────────────────────────────────────────────
+// ─── FMP (fallback) ───────────────────────────────────────────────────────────
 
 async function fmpGet(path, key) {
   const url = `${FMP}${path}&apikey=${key}`;
@@ -58,7 +86,6 @@ async function fmpGet(path, key) {
   if (!resp.ok) throw new Error(`FMP HTTP ${resp.status}`);
 
   const data = await resp.json();
-
   if (data?.['Error Message']) throw new Error(data['Error Message']);
   if (data?.message?.toLowerCase().includes('not found')) throw new Error(data.message);
   return data;
@@ -70,25 +97,7 @@ function n(v) {
   return isNaN(x) ? null : x;
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-export async function fetchFundamentals(symbol) {
-  // 1. Price from Yahoo — mandatory, no key needed
-  let yahoo;
-  try {
-    yahoo = await fetchYahooQuote(symbol);
-  } catch (err) {
-    logger.error(`Yahoo quote failed for ${symbol}: ${err.message}`);
-    return { error: err.message };
-  }
-
-  // 2. FMP fundamentals — best-effort, requires key
-  const key = config.fmp?.apiKey;
-  if (!key) {
-    logger.warn('FMP_API_KEY not configured — showing price only');
-    return buildResult(yahoo, {}, {}, {}, {});
-  }
-
+async function fetchFmpFundamentals(symbol, key) {
   const [profileRes, ratiosRes, quoteRes, metricsRes, targetRes] = await Promise.allSettled([
     fmpGet(`/profile?symbol=${symbol}`, key),
     fmpGet(`/ratios-ttm?symbol=${symbol}`, key),
@@ -97,13 +106,12 @@ export async function fetchFundamentals(symbol) {
     fmpGet(`/price-target-consensus?symbol=${symbol}`, key),
   ]);
 
-  // Stable endpoints return arrays for profile/quote/metrics, object for ratios-ttm and price-target
   const first = v => (Array.isArray(v) ? v[0] : v) ?? {};
-  const profile = profileRes.status  === 'fulfilled' ? first(profileRes.value)  : {};
-  const ratios  = ratiosRes.status   === 'fulfilled' ? first(ratiosRes.value)   : {};
-  const quote   = quoteRes.status    === 'fulfilled' ? first(quoteRes.value)    : {};
-  const metrics = metricsRes.status  === 'fulfilled' ? first(metricsRes.value)  : {};
-  const target  = targetRes.status   === 'fulfilled' ? first(targetRes.value)   : {};
+  const profile  = profileRes.status  === 'fulfilled' ? first(profileRes.value)  : {};
+  const ratios   = ratiosRes.status   === 'fulfilled' ? first(ratiosRes.value)   : {};
+  const quote    = quoteRes.status    === 'fulfilled' ? first(quoteRes.value)    : {};
+  const metrics  = metricsRes.status  === 'fulfilled' ? first(metricsRes.value)  : {};
+  const target   = targetRes.status   === 'fulfilled' ? first(targetRes.value)   : {};
 
   if (profileRes.status  === 'rejected') logger.warn(`FMP profile failed for ${symbol}: ${profileRes.reason.message}`);
   if (ratiosRes.status   === 'rejected') logger.warn(`FMP ratios failed for ${symbol}: ${ratiosRes.reason.message}`);
@@ -111,66 +119,133 @@ export async function fetchFundamentals(symbol) {
   if (metricsRes.status  === 'rejected') logger.warn(`FMP key-metrics failed for ${symbol}: ${metricsRes.reason.message}`);
   if (targetRes.status   === 'rejected') logger.warn(`FMP price-target failed for ${symbol}: ${targetRes.reason.message}`);
 
-  logger.info(`FMP data fetched for ${symbol}: ${profile.companyName || symbol}`);
-  return buildResult(yahoo, profile, ratios, quote, metrics, target);
-}
-
-function buildResult(yahoo, profile, ratios, quote, metrics, target = {}) {
-  const earningsTs = quote.earningsAnnouncement
-    ? new Date(quote.earningsAnnouncement)
-    : null;
-
-  // Compute absolute revenue and FCF from per-share × shares outstanding
-  const shares = n(quote.sharesOutstanding);
+  // FMP key-metrics returns per-share values — multiply by shares to get totals
+  const shares         = n(quote.sharesOutstanding);
   const revenuePerShare = n(metrics.revenuePerShareTTM);
   const fcfPerShare     = n(metrics.freeCashFlowPerShareTTM);
-  const totalRevenue    = (revenuePerShare && shares) ? revenuePerShare * shares : null;
-  const freeCashflow    = (fcfPerShare && shares)     ? fcfPerShare * shares     : null;
-
-  // ROE: prefer key-metrics-ttm (more reliable), fall back to ratios-ttm
-  const returnOnEquity = n(metrics.returnOnEquityTTM) ?? n(ratios.returnOnEquityTTM);
 
   return {
-    // Identity
-    longName:  profile.companyName || yahoo.longName,
     sector:    profile.sector   || null,
     industry:  profile.industry || null,
 
-    // Price (Yahoo)
+    beta:         n(profile.beta),
+    trailingPE:   n(ratios.priceToEarningsRatioTTM),
+    forwardPE:    null,
+    priceToBook:  n(ratios.priceToBookRatioTTM),
+    trailingEps:  n(quote.eps),
+
+    totalRevenue:   (revenuePerShare && shares) ? revenuePerShare * shares : null,
+    grossMargins:   n(ratios.grossProfitMarginTTM),
+    profitMargins:  n(ratios.netProfitMarginTTM),
+    returnOnEquity: n(metrics.returnOnEquityTTM) ?? n(ratios.returnOnEquityTTM),
+    freeCashflow:   (fcfPerShare && shares) ? fcfPerShare * shares : null,
+
+    targetMeanPrice: n(target.targetConsensus),
+    targetHighPrice: n(target.targetHigh),
+    targetLowPrice:  n(target.targetLow),
+    recommendationKey: null,
+    buyCount:  null,
+    holdCount: null,
+    sellCount: null,
+
+    nextEarningsDate: quote.earningsAnnouncement ? new Date(quote.earningsAnnouncement) : null,
+  };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Returns true if the fundamentals object is too sparse to be useful.
+ * Sparse = fewer than 2 of 5 key metrics are non-null.
+ */
+function isSparse(f) {
+  const keyMetrics = [f.trailingPE, f.grossMargins, f.profitMargins, f.returnOnEquity, f.totalRevenue];
+  return keyMetrics.filter(v => v != null).length < 2;
+}
+
+function buildResult(yahoo, f) {
+  return {
+    longName:  yahoo.name,
+    sector:    f.sector   || null,
+    industry:  f.industry || null,
+
     price:            yahoo.price,
     previousClose:    yahoo.previousClose,
     changePercent:    yahoo.changePercent,
     fiftyTwoWeekHigh: yahoo.fiftyTwoWeekHigh,
     fiftyTwoWeekLow:  yahoo.fiftyTwoWeekLow,
 
-    // Valuation (FMP ratios-ttm + quote)
-    trailingPE:   n(ratios.priceToEarningsRatioTTM),
-    forwardPE:    null,
-    priceToBook:  n(ratios.priceToBookRatioTTM),
-    trailingEps:  n(quote.eps),
-    beta:         n(profile.beta),
+    trailingPE:   f.trailingPE   ?? null,
+    forwardPE:    f.forwardPE    ?? null,
+    priceToBook:  f.priceToBook  ?? null,
+    trailingEps:  f.trailingEps  ?? null,
+    beta:         f.beta         ?? null,
 
-    // Financials TTM
-    totalRevenue,
-    grossMargins:   n(ratios.grossProfitMarginTTM),
-    profitMargins:  n(ratios.netProfitMarginTTM),
-    returnOnEquity,
-    freeCashflow,
+    totalRevenue:   f.totalRevenue   ?? null,
+    grossMargins:   f.grossMargins   ?? null,
+    profitMargins:  f.profitMargins  ?? null,
+    returnOnEquity: f.returnOnEquity ?? null,
+    freeCashflow:   f.freeCashflow   ?? null,
 
-    // Analyst (FMP price-target-consensus)
-    targetMeanPrice:   n(target.targetConsensus),
-    targetHighPrice:   n(target.targetHigh),
-    targetLowPrice:    n(target.targetLow),
-    recommendationKey: null,
-    buyCount:          null,
-    holdCount:         null,
-    sellCount:         null,
+    targetMeanPrice:   f.targetMeanPrice   ?? null,
+    targetHighPrice:   f.targetHighPrice   ?? null,
+    targetLowPrice:    f.targetLowPrice    ?? null,
+    recommendationKey: f.recommendationKey ?? null,
+    buyCount:          f.buyCount          ?? null,
+    holdCount:         f.holdCount         ?? null,
+    sellCount:         f.sellCount         ?? null,
 
-    // Earnings (FMP quote)
-    nextEarningsDate: earningsTs,
+    nextEarningsDate: f.nextEarningsDate ?? null,
     nextEpsEstimate:  null,
     recentActions:    [],
   };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export async function fetchFundamentals(symbol) {
+  // 1. Price from Yahoo v8/chart — always required
+  const yahoo = await fetchQuote(symbol);
+  if (yahoo.error) {
+    logger.error(`Yahoo quote failed for ${symbol}: ${yahoo.error}`);
+    return { error: yahoo.error };
+  }
+
+  // 2. Try Yahoo quoteSummary first — no key needed, better international coverage
+  let fundamentals = null;
+  let source = 'none';
+
+  try {
+    fundamentals = await fetchYahooFundamentals(symbol);
+    if (!isSparse(fundamentals)) {
+      source = 'yahoo';
+      logger.info(`Yahoo quoteSummary data fetched for ${symbol} (${fundamentals.sector || 'no sector'})`);
+    } else {
+      logger.warn(`Yahoo quoteSummary sparse for ${symbol} — trying FMP fallback`);
+      fundamentals = null;
+    }
+  } catch (err) {
+    logger.warn(`Yahoo quoteSummary failed for ${symbol}: ${err.message} — trying FMP fallback`);
+  }
+
+  // 3. FMP fallback — if Yahoo sparse or failed
+  if (!fundamentals) {
+    const key = config.fmp?.apiKey;
+    if (key) {
+      try {
+        fundamentals = await fetchFmpFundamentals(symbol, key);
+        source = 'fmp';
+        logger.info(`FMP fallback data fetched for ${symbol}`);
+      } catch (err) {
+        logger.warn(`FMP fallback also failed for ${symbol}: ${err.message}`);
+      }
+    } else {
+      logger.warn(`FMP_API_KEY not configured — Yahoo quoteSummary was the only option`);
+    }
+  }
+
+  logger.info(`Research fundamentals source: ${source} for ${symbol}`);
+  return buildResult(yahoo, fundamentals || {});
 }
 
 export default { fetchFundamentals };

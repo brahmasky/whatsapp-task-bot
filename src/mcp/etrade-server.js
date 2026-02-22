@@ -24,8 +24,7 @@ import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { ETradeService } from '../tasks/portfolio/etrade.service.js';
-import { getStoredTokens, SHARED_USER_ID } from '../tasks/portfolio/keychain.service.js';
+import { getAuthenticatedService } from '../shared/etrade.helper.js';
 
 // Cache portfolio data to avoid repeated API calls within a session
 let cachedPortfolioData = null;
@@ -52,19 +51,7 @@ async function getPortfolioData() {
     return cachedPortfolioData;
   }
 
-  // Get stored tokens
-  const tokens = await getStoredTokens(SHARED_USER_ID);
-  if (!tokens) {
-    throw new Error(
-      'E*TRADE not authenticated. Please run /portfolio in the WhatsApp bot first to complete OAuth, ' +
-      'or set up tokens manually.'
-    );
-  }
-
-  // Create service and fetch data
-  const etrade = new ETradeService();
-  etrade.setTokens(tokens.oauthToken, tokens.oauthTokenSecret);
-
+  const etrade = await getAuthenticatedService();
   cachedPortfolioData = await etrade.fetchPortfolioData();
   cacheTimestamp = Date.now();
 

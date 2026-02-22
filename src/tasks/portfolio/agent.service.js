@@ -1,7 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
-import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 import { getETradeClient, getResearchClient } from '../../mcp/client.js';
+import { runAgentLoop } from '../../shared/agent.service.js';
 
 /**
  * Portfolio Advisor Agent
@@ -173,15 +172,6 @@ async function executeTool(toolName, toolInput) {
  * @returns {Promise<{analysis: string, usage: {inputTokens: number, outputTokens: number}, toolCalls: number}>}
  */
 export async function runPortfolioAgent(onUpdate = null) {
-  if (!config.claude.apiKey) {
-    throw new Error('ANTHROPIC_API_KEY not configured');
-  }
-
-  const client = new Anthropic({
-    apiKey: config.claude.apiKey,
-  });
-
-  // Initial message
   const messages = [
     {
       role: 'user',
@@ -189,89 +179,27 @@ export async function runPortfolioAgent(onUpdate = null) {
     },
   ];
 
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let toolCallCount = 0;
-  const maxIterations = 15; // Safety limit
-
   logger.info('Starting portfolio agent loop (using MCP servers)...');
 
-  for (let i = 0; i < maxIterations; i++) {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      tools: TOOLS,
-      messages,
-    });
-
-    totalInputTokens += response.usage?.input_tokens || 0;
-    totalOutputTokens += response.usage?.output_tokens || 0;
-
-    // Check if we're done (no more tool use)
-    if (response.stop_reason === 'end_turn') {
-      const analysisText = response.content
-        .filter(block => block.type === 'text')
-        .map(block => block.text)
-        .join('\n');
-
-      logger.info(`Agent completed after ${toolCallCount} tool calls`);
-
-      return {
-        analysis: analysisText,
-        usage: {
-          inputTokens: totalInputTokens,
-          outputTokens: totalOutputTokens,
-        },
-        toolCalls: toolCallCount,
-      };
-    }
-
-    // Process tool calls
-    if (response.stop_reason === 'tool_use') {
-      const assistantContent = response.content;
-      messages.push({ role: 'assistant', content: assistantContent });
-
-      const toolResults = [];
-
-      for (const block of assistantContent) {
-        if (block.type === 'tool_use') {
-          const toolName = block.name;
-          const toolInput = block.input;
-          toolCallCount++;
-
-          logger.info(`Agent calling MCP tool: ${toolName}`, toolInput);
-
-          if (onUpdate) {
-            const serverType = TOOL_SERVER_MAP[toolName] || 'unknown';
-            onUpdate(`🔧 [${serverType}] ${toolName}${toolInput.symbol ? `: ${toolInput.symbol}` : ''}`);
-          }
-
-          try {
-            const result = await executeTool(toolName, toolInput);
-
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(result),
-            });
-          } catch (error) {
-            logger.error(`Tool ${toolName} failed:`, error.message);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify({ error: error.message }),
-              is_error: true,
-            });
-          }
-        }
+  const { text, usage, toolCalls } = await runAgentLoop({
+    model: 'claude-sonnet-4-20250514',
+    system: SYSTEM_PROMPT,
+    messages,
+    tools: TOOLS,
+    maxIterations: 15,
+    maxTokens: 2000,
+    executeTool,
+    onToolCall: (name, input) => {
+      logger.info(`Agent calling MCP tool: ${name}`, input);
+      if (onUpdate) {
+        const serverType = TOOL_SERVER_MAP[name] || 'unknown';
+        onUpdate(`🔧 [${serverType}] ${name}${input.symbol ? `: ${input.symbol}` : ''}`);
       }
+    },
+  });
 
-      messages.push({ role: 'user', content: toolResults });
-    }
-  }
-
-  throw new Error('Agent exceeded maximum iterations');
+  logger.info(`Agent completed after ${toolCalls} tool calls`);
+  return { analysis: text, usage, toolCalls };
 }
 
 export default { runPortfolioAgent };

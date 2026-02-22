@@ -294,6 +294,86 @@ export class ETradeService {
     return response?.OrdersResponse?.Order || [];
   }
 
+  /**
+   * Make authenticated API request with a JSON body (POST/PUT).
+   * OAuth1 signs only the URL — not the JSON body.
+   */
+  async _requestWithBody(method, path, body) {
+    if (!this.oauthToken || !this.oauthTokenSecret) {
+      throw new ETradeError('Not authenticated. Call setTokens or complete OAuth flow.', 401);
+    }
+
+    const url = `${this.baseUrl}${path}`;
+    const requestData = { url, method: method.toUpperCase() };
+    const token = { key: this.oauthToken, secret: this.oauthTokenSecret };
+    const headers = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+
+    logger.debug(`E*TRADE ${method} ${path} body: ${JSON.stringify(body)}`);
+
+    const response = await fetch(url, {
+      method: method.toUpperCase(),
+      headers: {
+        ...headers,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    let payload = null;
+    const rawText = response.status !== 204 ? await response.text() : null;
+
+    if (rawText) {
+      try {
+        payload = JSON.parse(rawText);
+      } catch {
+        payload = { raw: rawText };
+      }
+    }
+
+    if (!response.ok) {
+      const msg = payload?.message || payload?.Error?.message || response.statusText || String(response.status);
+      logger.warn(`E*TRADE ${method} ${path} → ${response.status}: ${JSON.stringify(payload)}`);
+      throw new ETradeError(msg, response.status, payload);
+    }
+
+    return payload;
+  }
+
+  // ---------- Order API Methods ----------
+
+  /**
+   * Preview an order (required before placing)
+   * @param {string} accountIdKey
+   * @param {object} orderPayload - PreviewOrderRequest body
+   */
+  async previewOrder(accountIdKey, orderPayload) {
+    const response = await this._requestWithBody('POST', `/v1/accounts/${accountIdKey}/orders/preview`, orderPayload);
+    return response?.PreviewOrderResponse;
+  }
+
+  /**
+   * Place an order (requires a prior preview)
+   * @param {string} accountIdKey
+   * @param {object} placePayload - PlaceOrderRequest body (includes PreviewIds)
+   */
+  async placeOrder(accountIdKey, placePayload) {
+    const response = await this._requestWithBody('POST', `/v1/accounts/${accountIdKey}/orders/place`, placePayload);
+    return response?.PlaceOrderResponse;
+  }
+
+  /**
+   * Cancel an existing order
+   * @param {string} accountIdKey
+   * @param {number|string} orderId
+   */
+  async cancelOrder(accountIdKey, orderId) {
+    const response = await this._requestWithBody('PUT', `/v1/accounts/${accountIdKey}/orders/cancel`, {
+      CancelOrderRequest: { orderId },
+    });
+    return response?.CancelOrderResponse;
+  }
+
   // ---------- Portfolio Data Aggregation ----------
 
   /**

@@ -1,5 +1,6 @@
 import { ETradeService } from './etrade.service.js';
-import { getStoredTokens, storeTokens, deleteTokens, SHARED_USER_ID } from './keychain.service.js';
+import { getStoredTokens, deleteTokens, SHARED_USER_ID } from './keychain.service.js';
+import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
 import { runPortfolioAgent } from './agent.service.js';
 import { getETradeClient } from '../../mcp/client.js';
 import { savePortfolioCache } from '../market/cache.service.js';
@@ -24,9 +25,6 @@ import logger from '../../utils/logger.js';
  * Subcommands:
  * - /portfolio logout - Clear stored tokens
  */
-
-// Store ETradeService instances per user (for OAuth flow continuity)
-const userServices = new Map();
 
 export default {
   command: '/portfolio',
@@ -73,7 +71,6 @@ export default {
 
       const etradeService = new ETradeService();
       etradeService.setTokens(storedTokens.oauthToken, storedTokens.oauthTokenSecret);
-      userServices.set(ctx.userId, etradeService);
 
       try {
         const isValid = await etradeService.validateTokens();
@@ -100,16 +97,11 @@ export default {
    * Start OAuth authentication flow
    */
   async startAuthFlow(ctx) {
-    const etradeService = new ETradeService();
-    userServices.set(ctx.userId, etradeService);
-
     try {
-      const { authUrl } = await etradeService.getAuthorizationUrl();
-
+      const { authUrl } = await startAuthFlow(ctx.userId);
       ctx.updateTask('awaiting_pin', { authUrl });
 
       const envNote = config.etrade.sandbox ? ' (SANDBOX)' : '';
-
       await ctx.reply(
         `E*TRADE Authorization Required${envNote}\n\n` +
         '1. Click this link to authorize:\n' +
@@ -147,7 +139,6 @@ export default {
   async handlePIN(ctx, text) {
     const pin = text.trim();
 
-    // E*TRADE PINs are typically alphanumeric, 5-10 characters
     if (!pin || pin.length < 4 || pin.length > 20) {
       await ctx.reply(
         'Invalid PIN format. Please enter the verification code from E*TRADE.\n' +
@@ -156,28 +147,11 @@ export default {
       return;
     }
 
-    const etradeService = userServices.get(ctx.userId);
-
-    if (!etradeService) {
-      await ctx.reply('Session expired. Please start again with /portfolio');
-      ctx.completeTask();
-      return;
-    }
-
     try {
       await ctx.reply('Verifying PIN...');
       ctx.updateTask('exchanging_token');
 
-      const tokens = await etradeService.exchangeToken(pin);
-
-      // Store tokens in Keychain (using shared user ID for single-user mode)
-      const saved = await storeTokens(SHARED_USER_ID, tokens.oauthToken, tokens.oauthTokenSecret);
-
-      if (saved) {
-        logger.info('OAuth tokens saved to Keychain');
-      } else {
-        logger.warn('Failed to save tokens to Keychain');
-      }
+      await exchangePin(ctx.userId, pin);
 
       await ctx.reply('Authentication successful! Fetching portfolio data...');
       await this.fetchAndAnalyze(ctx);
@@ -309,8 +283,6 @@ export default {
       logger.error('Portfolio fetch/analysis error:', error);
 
       if (error.status === 401) {
-        // Token expired, need re-auth
-        await deleteTokens(SHARED_USER_ID);
         await ctx.reply('Session expired. Starting re-authentication...');
         await this.startAuthFlow(ctx);
       } else {
@@ -368,7 +340,7 @@ export default {
    * Cleanup task resources
    */
   async cleanup(ctx) {
-    userServices.delete(ctx.userId);
+    cleanupAuthFlow(ctx.userId);
     ctx.completeTask();
   },
 };
