@@ -24,77 +24,109 @@ import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import yahooFinance from 'yahoo-finance2';
 import { fetchMarketNews } from '../tasks/portfolio/news.service.js';
 import { fetchQuote } from '../shared/yahoo.service.js';
 
-const YAHOO_QUOTE_URL = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary';
+// Singleton yahoo-finance2 instance (handles crumb/cookie auth automatically)
+const _yf = new yahooFinance({ suppressNotices: ['yahooSurvey'] });
+
+const YAHOO_MODULES = [
+  'assetProfile', 'summaryDetail', 'financialData', 'defaultKeyStatistics',
+  'recommendationTrend', 'calendarEvents', 'earningsTrend', 'upgradeDowngradeHistory',
+];
 
 /**
- * Fetch company profile and key stats from Yahoo Finance
+ * Fetch company profile and key stats from Yahoo Finance via yahoo-finance2.
+ * Uses same modules as fundamentals.service.js for consistency.
  */
 async function fetchCompanyProfile(symbol) {
-  const modules = 'assetProfile,summaryDetail,financialData,recommendationTrend';
-  const url = `${YAHOO_QUOTE_URL}/${symbol}?modules=${modules}`;
+  const result = await _yf.quoteSummary(symbol, { modules: YAHOO_MODULES });
 
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-    },
-  });
+  const profile   = result.assetProfile             || {};
+  const summary   = result.summaryDetail            || {};
+  const financial = result.financialData            || {};
+  const stats     = result.defaultKeyStatistics     || {};
+  const recs      = result.recommendationTrend?.trend || [];
+  const calendar  = result.calendarEvents?.earnings || {};
+  const trend     = result.earningsTrend?.trend     || [];
+  const upgrades  = result.upgradeDowngradeHistory?.history || [];
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch profile for ${symbol}: ${response.status}`);
-  }
+  // Next earnings date — yahoo-finance2 returns real Date objects
+  const earningsDates = calendar.earningsDate || [];
+  const nextEarningsDate = earningsDates.length > 0
+    ? earningsDates[0].toISOString().split('T')[0]
+    : null;
 
-  const data = await response.json();
-  const result = data.quoteSummary?.result?.[0];
+  // Forward EPS estimates
+  const trendFor = period => trend.find(t => t.period === period) || {};
+  const epsCurrentQuarter = trendFor('0q').earningsEstimate?.avg ?? null;
+  const epsCurrentYear    = trendFor('0y').earningsEstimate?.avg ?? null;
+  const epsNextYear       = trendFor('+1y').earningsEstimate?.avg ?? null;
 
-  if (!result) {
-    throw new Error(`No profile data found for ${symbol}`);
-  }
+  // Recent analyst actions (last 5, with price target changes)
+  const actionLabel = { up: '↑', down: '↓', main: '→', init: '★', reit: '→' };
+  const recentActions = upgrades.slice(0, 5).map(h => ({
+    date:          h.epochGradeDate ? new Date(h.epochGradeDate).toISOString().split('T')[0] : null,
+    firm:          h.firm        || null,
+    action:        actionLabel[h.action] || h.action || null,
+    toGrade:       h.toGrade    || null,
+    fromGrade:     h.fromGrade  || null,
+    currentTarget: h.currentPriceTarget ?? null,
+    priorTarget:   h.priorPriceTarget   ?? null,
+  }));
 
-  const profile = result.assetProfile || {};
-  const summary = result.summaryDetail || {};
-  const financial = result.financialData || {};
-  const recommendations = result.recommendationTrend?.trend || [];
+  // D/E ratio — divide by 100 (Yahoo returns as percentage)
+  const debtToEquity = financial.debtToEquity != null
+    ? parseFloat((financial.debtToEquity / 100).toFixed(2))
+    : null;
 
   return {
     symbol,
     company: {
-      name: profile.name,
-      sector: profile.sector,
-      industry: profile.industry,
-      website: profile.website,
-      employees: profile.fullTimeEmployees,
-      description: profile.longBusinessSummary?.substring(0, 500) + '...',
+      name:        profile.name,
+      sector:      profile.sector,
+      industry:    profile.industry,
+      website:     profile.website,
+      employees:   profile.fullTimeEmployees,
+      description: profile.longBusinessSummary?.substring(0, 500),
     },
     valuation: {
-      marketCap: summary.marketCap?.fmt,
-      trailingPE: summary.trailingPE?.fmt,
-      forwardPE: summary.forwardPE?.fmt,
-      priceToBook: summary.priceToBook?.fmt,
-      dividendYield: summary.dividendYield?.fmt,
+      marketCap:     summary.marketCap,
+      trailingPE:    summary.trailingPE,
+      forwardPE:     summary.forwardPE,
+      priceToBook:   summary.priceToBook,
+      dividendYield: summary.dividendYield,
+      trailingEps:   stats.trailingEps,
     },
     financials: {
-      revenue: financial.totalRevenue?.fmt,
-      revenueGrowth: financial.revenueGrowth?.fmt,
-      grossMargin: financial.grossMargins?.fmt,
-      operatingMargin: financial.operatingMargins?.fmt,
-      profitMargin: financial.profitMargins?.fmt,
-      returnOnEquity: financial.returnOnEquity?.fmt,
-      debtToEquity: financial.debtToEquity?.fmt,
-      currentPrice: financial.currentPrice?.fmt,
-      targetMeanPrice: financial.targetMeanPrice?.fmt,
+      revenue:           financial.totalRevenue,
+      revenueGrowth:     financial.revenueGrowth,
+      grossMargin:       financial.grossMargins,
+      operatingMargin:   financial.operatingMargins,
+      profitMargin:      financial.profitMargins,
+      returnOnEquity:    financial.returnOnEquity,
+      freeCashflow:      financial.freeCashflow,
+      debtToEquity,
+      currentPrice:      financial.currentPrice,
+      targetMeanPrice:   financial.targetMeanPrice,
       recommendationKey: financial.recommendationKey,
     },
-    analystRecommendations: recommendations.slice(0, 2).map(t => ({
-      period: t.period,
-      strongBuy: t.strongBuy,
-      buy: t.buy,
-      hold: t.hold,
-      sell: t.sell,
+    estimates: {
+      epsCurrentQuarter,
+      epsCurrentYear,
+      epsNextYear,
+      nextEarningsDate,
+    },
+    analystRecommendations: recs.slice(0, 2).map(t => ({
+      period:     t.period,
+      strongBuy:  t.strongBuy,
+      buy:        t.buy,
+      hold:       t.hold,
+      sell:       t.sell,
       strongSell: t.strongSell,
     })),
+    recentAnalystActions: recentActions,
   };
 }
 

@@ -95,6 +95,29 @@ function formatFundamentalsForAgent(symbol, f) {
     ? `${(((f.price - f.fiftyTwoWeekLow) / (f.fiftyTwoWeekHigh - f.fiftyTwoWeekLow)) * 100).toFixed(0)}% of 52w range`
     : 'N/A';
 
+  const earningsDateStr = f.nextEarningsDate
+    ? new Date(f.nextEarningsDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'N/A';
+
+  const epsEstimates = [
+    f.epsEstimateCurrentQuarter != null ? `CQ: $${num(f.epsEstimateCurrentQuarter, 2)}` : null,
+    f.epsEstimateCurrentYear    != null ? `CY: $${num(f.epsEstimateCurrentYear, 2)}`    : null,
+    f.epsEstimateNextYear       != null ? `NY: $${num(f.epsEstimateNextYear, 2)}`       : null,
+  ].filter(Boolean).join(' | ') || 'N/A';
+
+  const upgradesStr = f.recentUpgrades?.length > 0
+    ? f.recentUpgrades.slice(0, 5).map(u => {
+        let line = `${u.date}: ${u.firm} ${u.action} ${u.toGrade}${u.fromGrade ? ` (from ${u.fromGrade})` : ''}`;
+        if (u.currentTarget != null && u.priorTarget != null) {
+          const pct = (((u.currentTarget - u.priorTarget) / u.priorTarget) * 100).toFixed(0);
+          line += ` | Target: $${u.priorTarget}→$${u.currentTarget} (${pct >= 0 ? '+' : ''}${pct}%)`;
+        } else if (u.currentTarget != null) {
+          line += ` | Target: $${u.currentTarget}`;
+        }
+        return line;
+      }).join('\n')
+    : 'No recent actions';
+
   return `Research request: ${symbol} — ${f.longName || symbol}
 Sector: ${f.sector || 'N/A'} | Industry: ${f.industry || 'N/A'}
 
@@ -104,15 +127,23 @@ Current: $${num(f.price, 2)} (${f.changePercent >= 0 ? '+' : ''}${num(f.changePe
 
 VALUATION
 P/E: ${num(f.trailingPE)} | Fwd P/E: ${num(f.forwardPE)} | P/B: ${num(f.priceToBook)}
-EPS: ${f.trailingEps != null ? '$' + num(f.trailingEps, 2) : 'N/A'} | Beta: ${num(f.beta, 2)}
+EPS (trailing): ${f.trailingEps != null ? '$' + num(f.trailingEps, 2) : 'N/A'} | Beta: ${num(f.beta, 2)}
 Analyst target: ${targetStr}
+EPS estimates — ${epsEstimates}
 
 QUALITY
 Revenue: ${big(f.totalRevenue)} | Gross Margin: ${pct(f.grossMargins)}
 Net Margin: ${pct(f.profitMargins)} | ROE: ${pct(f.returnOnEquity)} | FCF: ${big(f.freeCashflow)}
+D/E ratio: ${num(f.debtToEquity, 2)} | Current Ratio: ${num(f.currentRatio, 2)}
 
 ANALYST SENTIMENT
 ${f.buyCount != null ? `Buy: ${f.buyCount} | Hold: ${f.holdCount} | Sell: ${f.sellCount}` : f.recommendationKey ? `Consensus: ${f.recommendationKey}` : 'No analyst data'}
+
+RECENT ANALYST ACTIONS (last 5)
+${upgradesStr}
+
+UPCOMING
+Next earnings: ${earningsDateStr}
 
 Use get_news to check recent sentiment and catalysts, then produce your scored analysis.`;
 }

@@ -72,6 +72,26 @@ function formatFundamentals(f) {
     lines.push(`*Financials (TTM)*`);
     lines.push(`Revenue: ${fmtBig(f.totalRevenue)} | Gross Margin: ${fmtPct(f.grossMargins)}`);
     lines.push(`Net Margin: ${fmtPct(f.profitMargins)} | ROE: ${fmtPct(f.returnOnEquity)} | FCF: ${fmtBig(f.freeCashflow)}`);
+    if (f.debtToEquity != null || f.currentRatio != null) {
+      lines.push(`D/E: ${fmt(f.debtToEquity, 2)} | Current Ratio: ${fmt(f.currentRatio, 2)}`);
+    }
+    lines.push('');
+  }
+
+  // Forward EPS estimates + next earnings date
+  const hasEstimates = f.epsEstimateCurrentQuarter != null || f.epsEstimateCurrentYear != null || f.nextEarningsDate != null;
+  if (hasEstimates) {
+    lines.push(`*Estimates*`);
+    const epsParts = [
+      f.epsEstimateCurrentQuarter != null ? `EPS (Q): $${fmt(f.epsEstimateCurrentQuarter, 2)}` : null,
+      f.epsEstimateCurrentYear    != null ? `EPS (FY): $${fmt(f.epsEstimateCurrentYear, 2)}`   : null,
+      f.epsEstimateNextYear       != null ? `EPS (+1Y): $${fmt(f.epsEstimateNextYear, 2)}`      : null,
+    ].filter(Boolean);
+    if (epsParts.length) lines.push(epsParts.join(' | '));
+    if (f.nextEarningsDate) {
+      const d = new Date(f.nextEarningsDate);
+      lines.push(`Next earnings: ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+    }
     lines.push('');
   }
 
@@ -87,6 +107,23 @@ function formatFundamentals(f) {
       f.sellCount ? `${f.sellCount} Sell` : null,
     ].filter(Boolean).join(' / ');
     if (consensus) lines.push(consensus);
+    lines.push('');
+  }
+
+  // Recent analyst upgrades/downgrades (last 3, with price target changes)
+  if (f.recentUpgrades?.length > 0) {
+    lines.push(`*Recent Actions*`);
+    const actionWord = { '↑': '↑', '↓': '↓', '★': 'Init', '→': '→' };
+    f.recentUpgrades.slice(0, 3).forEach(u => {
+      let line = `${u.firm}: ${actionWord[u.action] || u.action} ${u.toGrade}`;
+      if (u.currentTarget != null && u.priorTarget != null) {
+        const pct = (((u.currentTarget - u.priorTarget) / u.priorTarget) * 100).toFixed(0);
+        line += ` | $${u.priorTarget}→$${u.currentTarget} (${pct >= 0 ? '+' : ''}${pct}%)`;
+      } else if (u.currentTarget != null) {
+        line += ` | PT $${u.currentTarget}`;
+      }
+      lines.push(line);
+    });
     lines.push('');
   }
 
