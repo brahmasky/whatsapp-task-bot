@@ -60,6 +60,16 @@ Rules:
 - Momentum: price position in 52-week range AND recent price action. IMPORTANT: being near the 52-week low on a profitable, established company may indicate a value entry point — weigh this carefully rather than treating it as automatically bearish.
 - Sentiment: news tone and recency of catalysts ONLY — do not reuse analyst counts already in Valuation
 
+## Entry plan (BUY / STRONG BUY only)
+When recommendation is BUY or STRONG BUY, include an entryPlan in the JSON output.
+
+Guidelines:
+- entryLow / entryHigh: use recent 7-day support as the floor; prefer pullback entries, not chasing
+- takeProfit: analyst mean target is the primary reference; adjust down if earnings imminent and stock may gap
+- stopLoss: place below the most recent meaningful support (7-day low or 52w low, whichever is tighter); keep risk defined
+- rrRatio: (takeProfit − midEntry) / (midEntry − stopLoss), rounded to 1 decimal — aim for ≥ 2.0
+- notes: flag upcoming earnings, notable target cuts/raises from recent actions, or any timing caution
+
 ## Final output
 When all four dimensions are [LOCKED], output the final result as JSON immediately after your scratchpad — no markdown fences, no extra text:
 {
@@ -69,8 +79,17 @@ When all four dimensions are [LOCKED], output the final result as JSON immediate
   "momentum": {"score": <0-25>, "reason": "<brief>"},
   "sentiment": {"score": <0-25>, "reason": "<brief>"},
   "recommendation": "<STRONG BUY | BUY | HOLD | SELL | STRONG SELL>",
-  "summary": "<2-3 sentence investment thesis>"
-}`;
+  "summary": "<2-3 sentence investment thesis>",
+  "entryPlan": {
+    "entryLow": <price or null>,
+    "entryHigh": <price or null>,
+    "takeProfit": <price or null>,
+    "stopLoss": <price or null>,
+    "rrRatio": <number or null>,
+    "notes": "<timing notes, earnings caution, etc.>"
+  }
+}
+Omit entryPlan entirely (do not include the key) when recommendation is HOLD, SELL, or STRONG SELL.`;
 
 function formatFundamentalsForAgent(symbol, f) {
   const pct = n => (n == null ? 'N/A' : `${(n * 100).toFixed(1)}%`);
@@ -118,12 +137,25 @@ function formatFundamentalsForAgent(symbol, f) {
       }).join('\n')
     : 'No recent actions';
 
+  const recent7High = f.recentOHLCV?.length > 0
+    ? Math.max(...f.recentOHLCV.map(d => d.high ?? 0))
+    : null;
+  const recent7Low = f.recentOHLCV?.length > 0
+    ? Math.min(...f.recentOHLCV.map(d => d.low ?? Infinity))
+    : null;
+  const ohlcvTable = f.recentOHLCV?.length > 0
+    ? f.recentOHLCV.map(d => `  ${d.date}  O:$${d.open} H:$${d.high} L:$${d.low} C:$${d.close}`).join('\n')
+    : '  N/A';
+
   return `Research request: ${symbol} — ${f.longName || symbol}
 Sector: ${f.sector || 'N/A'} | Industry: ${f.industry || 'N/A'}
 
 PRICE & MOMENTUM
 Current: $${num(f.price, 2)} (${f.changePercent >= 0 ? '+' : ''}${num(f.changePercent, 1)}% today)
 52w range: $${num(f.fiftyTwoWeekLow, 2)} – $${num(f.fiftyTwoWeekHigh, 2)} | Position: ${rangePos}
+7d high: ${recent7High != null ? '$' + num(recent7High, 2) : 'N/A'} | 7d low: ${recent7Low != null ? '$' + num(recent7Low, 2) : 'N/A'}
+Recent daily OHLCV (newest last):
+${ohlcvTable}
 
 VALUATION
 P/E: ${num(f.trailingPE)} | Fwd P/E: ${num(f.forwardPE)} | P/B: ${num(f.priceToBook)}
@@ -168,6 +200,7 @@ function parseAgentOutput(text) {
     // Validate required fields
     if (typeof parsed.score !== 'number') return null;
     if (!parsed.recommendation) return null;
+    // entryPlan is optional — only present on BUY/STRONG BUY
     return parsed;
   } catch {
     return null;

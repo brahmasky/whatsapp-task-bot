@@ -130,6 +130,24 @@ function formatFundamentals(f) {
   return lines.join('\n');
 }
 
+function formatEntryPlan(plan, currentPrice) {
+  if (!plan) return '';
+  const { entryLow, entryHigh, takeProfit, stopLoss, rrRatio, notes } = plan;
+  if (entryLow == null && entryHigh == null) return '';
+
+  const midEntry = (entryLow != null && entryHigh != null) ? (entryLow + entryHigh) / 2 : (entryLow ?? entryHigh);
+  const tpUpside = (takeProfit && midEntry) ? ((takeProfit - midEntry) / midEntry * 100) : null;
+  const slDown   = (stopLoss  && midEntry) ? ((midEntry - stopLoss)  / midEntry * 100) : null;
+
+  const lines = ['', '*Entry Plan*'];
+  lines.push(`Zone:  $${fmt(entryLow, 2)} – $${fmt(entryHigh, 2)}`);
+  if (takeProfit != null) lines.push(`TP:    $${fmt(takeProfit, 2)}${tpUpside != null ? ` (+${fmt(tpUpside, 1)}%)` : ''}`);
+  if (stopLoss   != null) lines.push(`SL:    $${fmt(stopLoss,   2)}${slDown   != null ? ` (-${fmt(slDown,   1)}%)` : ''}`);
+  if (rrRatio    != null) lines.push(`R/R:   ${rrRatio.toFixed(1)}:1`);
+  if (notes)              lines.push(`📝 ${notes}`);
+  return lines.join('\n');
+}
+
 function formatScore(analysis) {
   const { score, valuation, quality, momentum, sentiment, recommendation, summary } = analysis;
 
@@ -190,7 +208,10 @@ const researchTask = {
     let scoreText = '';
     if (analysis) {
       scoreText = '\n' + formatScore(analysis);
-      logger.info(`${symbol} scored ${analysis.score}/100 (${analysis.recommendation}) via ${analysis.toolCalls} tool calls`);
+      if (analysis.entryPlan) {
+        scoreText += formatEntryPlan(analysis.entryPlan, fundamentals.price);
+      }
+      logger.info(`${symbol} scored ${analysis.score}/100 (${analysis.recommendation}) via ${analysis.toolCalls} tool calls${analysis.entryPlan ? ' [entry plan included]' : ''}`);
     } else {
       scoreText = '\n_Analysis unavailable — Claude API key required for scoring._';
     }

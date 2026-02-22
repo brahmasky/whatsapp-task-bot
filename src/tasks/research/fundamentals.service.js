@@ -30,7 +30,7 @@ import logger from '../../utils/logger.js';
 import { fetchQuote } from '../../shared/yahoo.service.js';
 
 // Singleton yahoo-finance2 instance (handles crumb/cookie auth automatically)
-const _yf = new yahooFinance({ suppressNotices: ['yahooSurvey'] });
+const _yf = new yahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'] });
 
 const FMP = 'https://financialmodelingprep.com/stable';
 
@@ -205,6 +205,29 @@ async function fetchFmpFundamentals(symbol, key) {
   };
 }
 
+// ─── Recent OHLCV (last 7 trading days) ───────────────────────────────────────
+
+/**
+ * Fetch last ~7 trading days of OHLCV for support/resistance context in entry plans.
+ * Uses yahoo-finance2 chart() (historical() is deprecated).
+ * Returns array of { date, open, high, low, close, volume } — newest last.
+ */
+async function fetchRecentOHLCV(symbol) {
+  const period1 = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000); // 14 calendar days → ~7-10 trading days
+  const result = await _yf.chart(symbol, { period1, period2: new Date(), interval: '1d' });
+  return (result.quotes || [])
+    .filter(d => d.close != null)
+    .slice(-7)
+    .map(d => ({
+      date:   d.date instanceof Date ? d.date.toISOString().split('T')[0] : d.date,
+      open:   d.open   != null ? parseFloat(d.open.toFixed(2))   : null,
+      high:   d.high   != null ? parseFloat(d.high.toFixed(2))   : null,
+      low:    d.low    != null ? parseFloat(d.low.toFixed(2))    : null,
+      close:  d.close  != null ? parseFloat(d.close.toFixed(2))  : null,
+      volume: d.volume ?? null,
+    }));
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -255,14 +278,22 @@ function buildResult(yahoo, f) {
     epsEstimateCurrentYear:    f.epsEstimateCurrentYear    ?? null,
     epsEstimateNextYear:       f.epsEstimateNextYear       ?? null,
     recentUpgrades:            f.recentUpgrades            ?? [],
+    recentOHLCV:               f.recentOHLCV               ?? [],
   };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function fetchFundamentals(symbol) {
-  // 1. Price from Yahoo v8/chart — always required
-  const yahoo = await fetchQuote(symbol);
+  // 1. Price (yahoo.service.js) + 7-day OHLCV in parallel — both are fast and independent
+  const [yahoo, recentOHLCV] = await Promise.all([
+    fetchQuote(symbol),
+    fetchRecentOHLCV(symbol).catch(err => {
+      logger.warn(`OHLCV fetch failed for ${symbol}: ${err.message}`);
+      return [];
+    }),
+  ]);
+
   if (yahoo.error) {
     logger.error(`Yahoo quote failed for ${symbol}: ${yahoo.error}`);
     return { error: yahoo.error };
@@ -302,7 +333,7 @@ export async function fetchFundamentals(symbol) {
   }
 
   logger.info(`Research fundamentals source: ${source} for ${symbol}`);
-  return buildResult(yahoo, fundamentals || {});
+  return buildResult(yahoo, { ...(fundamentals || {}), recentOHLCV });
 }
 
 export default { fetchFundamentals };
