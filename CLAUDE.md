@@ -274,25 +274,56 @@ The `/research TICKER` command fetches fundamentals and runs a Sonnet agent loop
 **Usage:** `/research AAPL`
 
 **Architecture:**
-1. Fetch price + 52w range from Yahoo Finance `v8/finance/chart` via `shared/yahoo.service.js`
-2. Fetch fundamentals from Yahoo `v10/finance/quoteSummary` (primary — no key, better international coverage)
-3. Fall back to FMP `/stable/` endpoints if Yahoo returns sparse data (key required, 250 calls/day)
-4. Run Sonnet agent loop (max 4 turns) via `shared/agent.service.js` with scratchpad reasoning
-5. Agent calls `get_news` tool (inline via Google News RSS) for sentiment
-6. Agent outputs JSON with score, 4 sub-scores, recommendation, summary
+1. Fetch price + 52w range from Yahoo Finance via `shared/yahoo.service.js` (60s cache)
+2. Fetch last 7 trading days OHLCV via yahoo-finance2 `chart()` for entry plan support/resistance
+3. Fetch fundamentals via yahoo-finance2 `quoteSummary` (primary — no key, better international coverage) using modules: `assetProfile`, `summaryDetail`, `financialData`, `defaultKeyStatistics`, `recommendationTrend`, `calendarEvents`, `earningsTrend`, `upgradeDowngradeHistory`
+4. Fall back to FMP `/stable/` endpoints if Yahoo returns sparse data (<2 of 5 key metrics non-null)
+5. Run Sonnet agent loop (max 4 turns) via `shared/agent.service.js` with scratchpad reasoning
+6. Agent calls `get_news` tool (inline via Google News RSS) for sentiment
+7. Agent outputs JSON: score, 4 sub-scores, recommendation, summary, and optional `entryPlan`
 
 **Scoring dimensions (0-25 each):**
 - Valuation: P/E vs norms, P/B, analyst target upside
 - Quality: margins, ROE, FCF generation
-- Momentum: 52w range position, recent price action
+- Momentum: 52w range position, recent price action (7-day OHLCV)
 - Sentiment: news tone from `get_news` tool call
 
-**Key files:**
-- `src/tasks/research/fundamentals.service.js` - Yahoo + FMP data fetching
-- `src/tasks/research/agent.service.js` - Sonnet agent loop with scratchpad
-- `src/tasks/research/index.js` - task definition and WhatsApp formatting
+**Entry plan (BUY / STRONG BUY only):**
+Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss`, `rrRatio`, `notes` based on 7-day OHLCV support levels. After the report, task stays alive in `awaiting_trade` state. User replies `trade 1000` (budget) or `trade qty 14` (fixed shares) to place a GFD BUY LIMIT at `entryHigh` immediately — same order + fill-monitor path as `/trade`. Re-auth handled inline if token expired.
 
-**Requires:** `FMP_API_KEY` + `ANTHROPIC_API_KEY`. Est. cost: ~$0.05/call.
+**Key files:**
+- `src/tasks/research/fundamentals.service.js` - Yahoo (yahoo-finance2) + FMP data fetching, OHLCV
+- `src/tasks/research/agent.service.js` - Sonnet agent loop with scratchpad and entry plan prompt
+- `src/tasks/research/index.js` - task definition, WhatsApp formatting, inline trade flow
+
+**Requires:** `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional (fallback for sparse data). Est. cost: ~$0.05/call.
+
+## Bracket Trading (/trade)
+
+The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitors for fill to auto-place TP + SL.
+
+**Flow:**
+1. `/trade UBER` — fetch current price for reference, prompt for plan
+2. Enter: `buy 70 73 tp 81.30 sl 68 budget 1000`
+3. Bot checks live cash balance (`getAccountBalances` — real-time API call), then places **BUY LIMIT at $73** (zone ceiling), **Good for Day**
+4. E*TRADE handles execution — no price polling loop in the bot
+5. Fill monitor (`alert.manager.js`) polls every 60s — on EXECUTED, automatically places TP (LIMIT SELL) + SL (STOP SELL) using `GOOD_UNTIL_CANCEL`
+6. On GFD EXPIRED, user is notified to re-run the next day
+
+**Order type:** BUY LIMIT at `buyHigh`. Fills at `buyHigh` or better (cheaper) anywhere in the zone.
+
+**Order sequencing:** BUY placed first. TP and SL placed only after BUY is EXECUTED — avoids accidental short sell.
+
+**Cash check:** `checkCashBalance()` fetches live `cashAvailableForInvestment` from E*TRADE before placing. Blocks if insufficient. Non-blocking on API failure (E*TRADE will also reject).
+
+**Portfolio cache:** Refreshed (fire-and-forget) after BUY placed and again after fill + exit orders placed, so `/market` P&L stays current.
+
+**Token expiry:** Both `/trade` and `/research` inline trade handle re-auth inline (`awaiting_pin` state). Plan data is preserved in task state so the order is placed automatically after PIN exchange.
+
+**Key files:**
+- `src/tasks/trade/index.js` - task definition, param parsing, re-auth flow
+- `src/tasks/trade/order.service.js` - `placeBuyOrder(symbol, qty, price, orderTerm)`, `cancelBuyOrder()`, `checkCashBalance()`, `refreshPortfolioCache()`
+- `src/tasks/trade/alert.manager.js` - fill monitor only (60s cron, `_checkFills`, `_placeFillExits`)
 
 ## Environment Variables
 

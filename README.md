@@ -12,7 +12,7 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 - **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration
 - **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
 - **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP fallback
-- **Price Alerts & Trading** - Price zone monitoring with bracket order execution via E*TRADE
+- **GFD Bracket Trading** - Place BUY LIMIT orders instantly (Good for Day) with automatic TP + SL on fill via E*TRADE
 - **System Monitoring** - macOS CPU, memory, disk, and temperature stats
 
 ## Setup
@@ -98,10 +98,10 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 | `/market weekly` | Force weekly summary |
 | `/market deep` | Force deep analysis with research tools |
 | `/market status` | Scheduler info and next update times |
-| `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals and recommendation |
-| `/trade TICKER` | Set a price alert + bracket order plan (buy zone, take profit, stop loss) |
-| `/trade list` | Show active price alerts and pending fills |
-| `/trade cancel TICKER` | Cancel a price alert |
+| `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals, recommendation, and entry plan |
+| `/trade TICKER` | Place a GFD BUY LIMIT order with auto TP + SL on fill via E*TRADE |
+| `/trade list` | Show pending BUY orders awaiting fill |
+| `/trade cancel TICKER` | Cancel the pending BUY order on E*TRADE |
 | `/trade fill TICKER` | Simulate a fill for sandbox testing |
 
 ### Research Scoring
@@ -115,24 +115,29 @@ The `/research` command runs a Sonnet agent loop that scores a stock across four
 | Momentum | 52-week range position, recent price action | 25 |
 | Sentiment | News tone and recency of catalysts | 25 |
 
-Data sources: Yahoo Finance `v10/quoteSummary` (primary, no key needed, better international coverage) with FMP `/stable/` API as fallback when Yahoo returns sparse data (free tier = 250 calls/day).
+Data sources: Yahoo Finance `quoteSummary` via yahoo-finance2 (primary, no key needed, better international coverage) with FMP `/stable/` API as fallback when Yahoo returns sparse data (free tier = 250 calls/day).
 Requires `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional but recommended. Est. cost: ~$0.05/call.
 
-### Price Alerts & Trading (/trade)
+**Entry plan (BUY / STRONG BUY only):** The agent produces an entry zone, take profit, stop loss, and R/R ratio based on 7-day OHLCV support levels. After receiving the report, reply `trade 1000` (budget) or `trade qty 14` (shares) to place the order inline — no need to switch to `/trade`.
 
-The `/trade` command monitors stock prices and executes bracket orders via E*TRADE.
+### Bracket Trading (/trade)
+
+The `/trade` command places a GFD BUY LIMIT order immediately and automatically places TP + SL once the buy is confirmed executed by E*TRADE.
 
 **Flow:**
-1. `/trade UBER` — fetch current price, prompt for plan
-2. Enter plan: `buy 70 72.50 tp 81.30 sl 68 budget 1000`
-3. Bot saves alert, monitors price every 60 seconds
-4. When price enters buy zone — alert fires with trend sparkline
-5. Reply `confirm` — bot places a GTC limit buy order on E*TRADE
-6. When buy fills — bot automatically places take profit + stop loss orders
+1. `/trade UBER` — fetch current price for reference, prompt for plan
+2. Enter plan: `buy 70 73 tp 81.30 sl 68 budget 1000`
+3. Bot checks live cash balance, then places a **BUY LIMIT at $73** (zone ceiling), **Good for Day**
+4. E*TRADE handles execution — no price monitoring loop
+5. Fill monitor polls every 60s — when BUY executes, bot automatically places TP + SL
+
+**Order type:** BUY LIMIT at `buyHigh` (zone ceiling), GFD. Fills at `buyHigh` or better (cheaper) anywhere in the zone. Expires at market close if not filled — run `/trade` again the next day.
 
 **Order sequencing:** BUY is placed first. TP and SL are only placed after the BUY is confirmed EXECUTED — avoids accidental short sell.
 
-**Token expiry:** E*TRADE OAuth tokens expire at midnight ET. If expired, `/trade` handles re-authentication inline without needing to switch to `/portfolio`.
+**Cash check:** Live E*TRADE cash balance is verified before placing any order. Order is blocked if insufficient funds.
+
+**Token expiry:** E*TRADE OAuth tokens expire at midnight ET. Both `/trade` and `/research` inline trade handle re-authentication inline without needing to switch to `/portfolio`.
 
 **Sandbox testing:** Use `/trade fill TICKER` to simulate a fill and trigger exit order placement (sandbox only — blocked in production).
 
