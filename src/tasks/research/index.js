@@ -8,6 +8,10 @@
 import logger from '../../utils/logger.js';
 import { fetchFundamentals } from './fundamentals.service.js';
 import { runResearchAgent } from './agent.service.js';
+import { addPendingFill } from '../trade/alert.manager.js';
+import { placeBuyOrder, calcQty, checkCashBalance, refreshPortfolioCache } from '../trade/order.service.js';
+import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
+import config from '../../config/index.js';
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
 
@@ -217,12 +221,184 @@ const researchTask = {
     }
 
     await ctx.reply(`${header}${fundamentalsText}${scoreText}`);
-    ctx.completeTask();
+
+    // Option C: keep task alive so user can set an alert inline on BUY/STRONG BUY
+    if (analysis?.entryPlan && ['BUY', 'STRONG BUY'].includes(analysis.recommendation)) {
+      ctx.updateTask('awaiting_trade', { symbol, entryPlan: analysis.entryPlan });
+      await ctx.reply(
+        `💡 Reply \`trade <budget>\` to place a GFD BUY LIMIT at $${analysis.entryPlan.entryHigh.toFixed(2)} (e.g. \`trade 1000\`)\n` +
+        `or \`trade qty <shares>\` for a fixed quantity.\n` +
+        `Type \`skip\` to dismiss.`
+      );
+    } else {
+      ctx.completeTask();
+    }
   },
 
-  async onMessage(ctx) {
-    await ctx.reply('Use /research TICKER for a new research report.');
+  async onMessage(ctx, text) {
+    const taskState = ctx.getState()?.taskState;
+
+    // ── PIN handler (re-auth flow) ────────────────────────────────────────────
+    if (taskState === 'awaiting_pin') {
+      const pin = text.trim();
+      if (!pin || pin.length < 4 || pin.length > 20) {
+        await ctx.reply('Invalid PIN format. Please enter the verification code from E*TRADE.');
+        return;
+      }
+      try {
+        await ctx.reply('Verifying PIN...');
+        await exchangePin(ctx.userId, pin);
+        logger.info('Research task: re-authentication successful');
+        await ctx.reply('✅ Re-authenticated! Placing order now...');
+        await _placeResearchOrder(ctx, ctx.getTaskData());
+      } catch (err) {
+        if (err.status === 401) {
+          await ctx.reply('Invalid or expired PIN. Please get a fresh PIN from the authorization page and try again.');
+        } else {
+          cleanupAuthFlow(ctx.userId);
+          logger.error(`Research re-auth PIN exchange failed: ${err.message}`);
+          await ctx.reply(`Re-authentication failed: ${err.message}`);
+          ctx.completeTask();
+        }
+      }
+      return;
+    }
+
+    // ── Trade setup handler ───────────────────────────────────────────────────
+    if (taskState !== 'awaiting_trade') {
+      await ctx.reply('Use /research TICKER for a new research report.');
+      ctx.completeTask();
+      return;
+    }
+
+    const { symbol, entryPlan } = ctx.getTaskData();
+    const lower = text.toLowerCase().trim();
+
+    // Dismiss
+    if (lower === 'skip' || lower === 'cancel') {
+      await ctx.reply('Alert dismissed.');
+      ctx.completeTask();
+      return;
+    }
+
+    // trade <budget>  or  trade qty <shares>
+    const budgetMatch = lower.match(/^trade\s+([\d.]+)$/);
+    const qtyMatch    = lower.match(/^trade\s+qty\s+(\d+)$/i);
+
+    if (!budgetMatch && !qtyMatch) {
+      await ctx.reply(
+        'Reply `trade <budget>` to place a GFD BUY LIMIT (e.g. `trade 1000`),\n' +
+        'or `trade qty <shares>` for a fixed quantity.\n' +
+        'Type `skip` to dismiss.'
+      );
+      return;
+    }
+
+    const budget   = budgetMatch ? parseFloat(budgetMatch[1]) : null;
+    const fixedQty = qtyMatch    ? parseInt(qtyMatch[1], 10)  : null;
+
+    const { entryLow, entryHigh, takeProfit, stopLoss } = entryPlan;
+    const limitPrice = entryHigh;
+    const qty = fixedQty ?? calcQty(budget, limitPrice);
+
+    if (qty <= 0) {
+      await ctx.reply(`❌ Budget $${budget?.toFixed(2)} is less than the limit price $${limitPrice.toFixed(2)}.`);
+      ctx.completeTask();
+      return;
+    }
+
+    // Save plan before any API calls — needed for re-auth retry
+    const plan = { symbol, entryLow, entryHigh, takeProfit, stopLoss, limitPrice, qty, budget };
+    ctx.updateTask('placing_order', plan);
+
+    // Cash balance check — treat 401 same as order placement 401
+    try {
+      const { cash, cost, sufficient } = await checkCashBalance(qty, limitPrice);
+      if (!sufficient) {
+        await ctx.reply(
+          `⚠️ *Insufficient cash — order not placed.*\n\n` +
+          `Order cost:      $${cost.toFixed(2)} (${qty} × $${limitPrice.toFixed(2)})\n` +
+          `Cash available:  $${cash.toFixed(2)}\n` +
+          `Shortfall:       $${(cost - cash).toFixed(2)}\n\n` +
+          `Use /trade ${symbol} to set a smaller budget.`
+        );
+        ctx.completeTask();
+        return;
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        await _startReAuth(ctx);
+        return;
+      }
+      logger.warn(`Cash balance check failed for ${symbol}: ${err.message} — proceeding`);
+      await ctx.reply(`⚠️ Could not verify cash balance (${err.message}) — proceeding with order.`);
+    }
+
+    await _placeResearchOrder(ctx, plan);
+  },
+
+  cleanup(ctx) {
+    cleanupAuthFlow(ctx.userId);
   },
 };
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+async function _startReAuth(ctx) {
+  try {
+    const { authUrl } = await startAuthFlow(ctx.userId);
+    ctx.updateTask('awaiting_pin'); // plan data preserved via state merge
+    const envNote = config.etrade?.sandbox ? ' (SANDBOX)' : '';
+    await ctx.reply(
+      `🔐 E*TRADE session expired. Re-authentication required${envNote}.\n\n` +
+      `1. Open this link to authorize:\n${authUrl}\n\n` +
+      `2. Log in to E*TRADE and click "Accept"\n` +
+      `3. Copy the PIN and reply with it here\n\n` +
+      `Your trade plan is saved — order will be placed after re-auth.\n` +
+      `Type /cancel to abort.`
+    );
+  } catch (authErr) {
+    logger.error(`Research: failed to start re-auth: ${authErr.message}`);
+    await ctx.reply(`Failed to start re-authentication: ${authErr.message}`);
+    ctx.completeTask();
+  }
+}
+
+async function _placeResearchOrder(ctx, plan) {
+  const { symbol, entryLow, entryHigh, takeProfit, stopLoss, limitPrice, qty, budget } = plan;
+
+  await ctx.reply(`⏳ Placing BUY LIMIT order for ${symbol}...`);
+
+  try {
+    const { buyOrderId, accountIdKey, verification } = await placeBuyOrder(symbol, qty, limitPrice, 'GOOD_FOR_DAY');
+
+    const tag = config.etrade?.sandbox ? ' [🧪 SANDBOX]' : '';
+    const v = verification?.[String(buyOrderId)];
+    const idStr = buyOrderId ? ` — #${buyOrderId}` : '';
+    const statusStr = v?.found ? ` ✓ ${v.status}` : buyOrderId ? ' ⚠️ unverified' : '';
+    const sizeDesc = budget != null ? `$${budget.toFixed(2)} budget` : `${qty} shares`;
+
+    addPendingFill({ symbol, userId: ctx.userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice });
+    refreshPortfolioCache().catch(err => logger.warn(`Post-BUY cache refresh failed: ${err.message}`));
+
+    await ctx.reply(
+      `✅ BUY LIMIT set for *${symbol}*${tag}\n` +
+      `📈 Entry: ≤$${limitPrice.toFixed(2)} (zone $${entryLow.toFixed(2)}–$${entryHigh.toFixed(2)})\n` +
+      `🎯 Take profit: $${takeProfit.toFixed(2)}\n` +
+      `🛑 Stop loss: $${stopLoss.toFixed(2)}\n` +
+      `💰 ${sizeDesc} → ${qty} shares\n` +
+      `Order${idStr}${statusStr} active GFD — monitoring for fill.`
+    );
+    ctx.completeTask();
+  } catch (err) {
+    if (err.status === 401) {
+      await _startReAuth(ctx);
+    } else {
+      logger.error(`Research inline trade failed for ${symbol}: ${err.message}`);
+      await ctx.reply(`❌ Order placement failed: ${err.message}`);
+      ctx.completeTask();
+    }
+  }
+}
 
 export default researchTask;

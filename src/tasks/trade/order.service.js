@@ -9,7 +9,10 @@
 
 import crypto from 'crypto';
 import logger from '../../utils/logger.js';
-export { getAuthenticatedService } from '../../shared/etrade.helper.js';
+import { getAuthenticatedService } from '../../shared/etrade.helper.js';
+import { savePortfolioCache } from '../market/cache.service.js';
+
+export { getAuthenticatedService };
 
 /**
  * Return the accountIdKey of the first brokerage account.
@@ -42,11 +45,11 @@ function buildInstrument(symbol, qty, action) {
   };
 }
 
-function buildOrderDetail(priceType, price, instrument) {
+function buildOrderDetail(priceType, price, instrument, orderTerm = 'GOOD_FOR_DAY') {
   const detail = {
     allOrNone: 'false',
     priceType,
-    orderTerm: 'GOOD_UNTIL_CANCEL',
+    orderTerm,
     marketSession: 'REGULAR',
     Instrument: [instrument],
   };
@@ -94,6 +97,36 @@ async function previewThenPlace(service, accountIdKey, orderDetail) {
   return placed?.OrderIds?.[0]?.orderId ?? null;
 }
 
+// ─── Cash balance check ───────────────────────────────────────────────────────
+
+/**
+ * Fetch available cash and compare against a proposed order cost.
+ * Uses cashAvailableForInvestment from the first brokerage account.
+ *
+ * @param {number} qty   - Number of shares to buy
+ * @param {number} price - Limit price per share
+ * @returns {Promise<{ cash: number, cost: number, sufficient: boolean }>}
+ */
+export async function checkCashBalance(qty, price) {
+  const service = await getAuthenticatedService();
+  const accountIdKey = await getFirstBrokerageAccount(service);
+  const balances = await service.getAccountBalances(accountIdKey);
+  const cash = parseFloat(balances?.Computed?.cashAvailableForInvestment ?? 0);
+  const cost = qty * price;
+  return { cash, cost, sufficient: cost <= cash };
+}
+
+/**
+ * Refresh the on-disk portfolio cache after a trade changes cash or positions.
+ * Fire-and-forget safe — callers should .catch() any errors.
+ */
+export async function refreshPortfolioCache() {
+  const service = await getAuthenticatedService();
+  const portfolioData = await service.fetchPortfolioData();
+  await savePortfolioCache(portfolioData);
+  logger.info('Portfolio cache refreshed after trade');
+}
+
 // ─── Order status ──────────────────────────────────────────────────────────────
 
 /**
@@ -111,16 +144,17 @@ export async function getOrderStatus(accountIdKey, orderId) {
 // ─── Order placement ──────────────────────────────────────────────────────────
 
 /**
- * Stage 1: Place a limit BUY order (GTC).
+ * Stage 1: Place a BUY LIMIT order.
+ * @param {string} orderTerm - 'GOOD_FOR_DAY' (default) or 'GOOD_UNTIL_CANCEL'
  * Returns accountIdKey + buyOrderId for fill monitoring.
  */
-export async function placeBuyOrder(symbol, qty, entryPrice) {
+export async function placeBuyOrder(symbol, qty, entryPrice, orderTerm = 'GOOD_FOR_DAY') {
   const service = await getAuthenticatedService();
   const accountIdKey = await getFirstBrokerageAccount(service);
 
-  logger.info(`Placing BUY order: ${qty} ${symbol} @ $${entryPrice}`);
+  logger.info(`Placing BUY LIMIT order: ${qty} ${symbol} @ ≤$${entryPrice} (${orderTerm})`);
 
-  const detail = buildOrderDetail('LIMIT', entryPrice, buildInstrument(symbol, qty, 'BUY'));
+  const detail = buildOrderDetail('LIMIT', entryPrice, buildInstrument(symbol, qty, 'BUY'), orderTerm);
   const buyOrderId = await previewThenPlace(service, accountIdKey, detail);
 
   logger.info(`BUY order placed: ${symbol} #${buyOrderId}`);
@@ -129,6 +163,15 @@ export async function placeBuyOrder(symbol, qty, entryPrice) {
   const verification = await _verifyOrders(service, accountIdKey, [buyOrderId].filter(Boolean));
 
   return { buyOrderId, accountIdKey, verification };
+}
+
+/**
+ * Cancel a pending BUY order on E*TRADE.
+ */
+export async function cancelBuyOrder(accountIdKey, orderId) {
+  const service = await getAuthenticatedService();
+  await service.cancelOrder(accountIdKey, orderId);
+  logger.info(`BUY order #${orderId} cancelled`);
 }
 
 /**

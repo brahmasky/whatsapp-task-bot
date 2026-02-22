@@ -1,20 +1,20 @@
 /**
  * /trade Task
  *
- * Set a bracket-style trade plan (buy zone + take-profit + stop-loss) for a
- * stock. The alert manager monitors price in the background and fires a
- * WhatsApp alert when the price enters the buy zone. On confirmation, the bot
- * places three E*TRADE orders: limit BUY, limit take-profit SELL, stop-loss SELL.
+ * Place a GFD BUY LIMIT order at the top of your entry zone immediately.
+ * E*TRADE handles execution; the fill monitor places TP + SL automatically
+ * once the buy is confirmed EXECUTED.
  *
- * If the E*TRADE OAuth token is expired at confirmation time, the task
+ * If the E*TRADE OAuth token is expired at order placement, the task
  * handles re-authentication inline — no need to visit /portfolio.
  *
  * Usage:
  *   /trade UBER                       — set a new trade plan
- *   /trade list                       — show active alerts
- *   /trade cancel UBER                — remove an alert
+ *   /trade list                       — show pending orders
+ *   /trade cancel UBER                — cancel the pending BUY order on E*TRADE
+ *   /trade fill UBER                  — simulate a fill (sandbox only)
  *
- * After setting a plan, send:
+ * After /trade TICKER, send:
  *   buy <low> <high> tp <target> sl <stop> budget <amount>
  *   buy <low> <high> tp <target> sl <stop> qty <shares>
  */
@@ -22,11 +22,8 @@
 import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
 import logger from '../../utils/logger.js';
 import { fetchStockQuote } from '../market/sector.service.js';
-import { placeBuyOrder, calcQty } from './order.service.js';
+import { placeBuyOrder, calcQty, checkCashBalance, cancelBuyOrder, refreshPortfolioCache } from './order.service.js';
 import {
-  addAlert,
-  removeAlert,
-  listAlerts,
   addPendingFill,
   removePendingFill,
   listPendingFills,
@@ -55,22 +52,42 @@ function parsePlan(text) {
   const m = text.match(PLAN_REGEX);
   if (!m) return null;
   return {
-    buyLow: parseFloat(m[1]),
-    buyHigh: parseFloat(m[2]),
+    buyLow:   parseFloat(m[1]),
+    buyHigh:  parseFloat(m[2]),
     takeProfit: parseFloat(m[3]),
     stopLoss: parseFloat(m[4]),
-    budget: m[5] ? parseFloat(m[5]) : null,
+    budget:   m[5] ? parseFloat(m[5]) : null,
     fixedQty: m[6] ? parseInt(m[6], 10) : null,
   };
 }
 
+// ─── Order placement (shared between handleParams and post-reauth) ─────────────
+
+async function placeAndTrack(ctx, { symbol, limitPrice, qty, takeProfit, stopLoss, buyLow, buyHigh, budget }) {
+  const { buyOrderId, accountIdKey, verification } = await placeBuyOrder(symbol, qty, limitPrice, 'GOOD_FOR_DAY');
+
+  const tag = sandboxTag();
+  const v = verification?.[String(buyOrderId)];
+  const idStr = buyOrderId ? ` — #${buyOrderId}` : '';
+  const statusStr = v?.found ? ` ✓ ${v.status}` : buyOrderId ? ' ⚠️ unverified' : '';
+  const sizeDesc = budget != null ? `$${budget.toFixed(2)} budget` : `${qty} shares`;
+
+  addPendingFill({ symbol, userId: ctx.userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice });
+  refreshPortfolioCache().catch(err => logger.warn(`Post-BUY cache refresh failed: ${err.message}`));
+
+  await ctx.reply(
+    `✅ BUY LIMIT set for *${symbol}*${tag}\n` +
+    `📈 Entry: ≤$${limitPrice.toFixed(2)} (zone $${buyLow.toFixed(2)}–$${buyHigh.toFixed(2)})\n` +
+    `🎯 Take profit: $${takeProfit.toFixed(2)} (${signedPct(limitPrice, takeProfit)})\n` +
+    `🛑 Stop loss: $${stopLoss.toFixed(2)} (${signedPct(limitPrice, stopLoss)})\n` +
+    `💰 ${sizeDesc} → ${qty} shares\n` +
+    `Order${idStr}${statusStr} active GFD — monitoring for fill.`
+  );
+  ctx.completeTask();
+}
+
 // ─── Re-auth flow ─────────────────────────────────────────────────────────────
 
-/**
- * Start inline OAuth re-authentication.
- * Clears expired tokens, gets a new auth URL, stores the service instance,
- * and switches task state to awaiting_pin (plan data is preserved).
- */
 async function startReAuth(ctx) {
   const { authUrl } = await startAuthFlow(ctx.userId);
   ctx.updateTask('awaiting_pin'); // plan data preserved via state merge
@@ -81,7 +98,7 @@ async function startReAuth(ctx) {
     `1. Open this link to authorize:\n${authUrl}\n\n` +
     `2. Log in to E*TRADE and click "Accept"\n` +
     `3. Copy the PIN and reply with it here\n\n` +
-    `Your trade plan is saved — orders will be placed after re-auth.\n` +
+    `Your trade plan is saved — order will be placed after re-auth.\n` +
     `Type /cancel to abort.`
   );
 }
@@ -100,11 +117,16 @@ async function handlePin(ctx, pin) {
     await exchangePin(ctx.userId, pin.trim());
     logger.info('Trade task: re-authentication successful');
 
-    ctx.updateTask('awaiting_confirmation');
-    await ctx.reply(
-      `✅ Re-authenticated successfully!\n\n` +
-      `Reply *confirm* to place your orders, or *cancel* to dismiss.`
-    );
+    await ctx.reply('✅ Re-authenticated! Placing order now...');
+
+    const data = ctx.getTaskData();
+    try {
+      await placeAndTrack(ctx, data);
+    } catch (placeErr) {
+      logger.error(`Order placement failed after re-auth: ${placeErr.message}`);
+      await ctx.reply(`❌ Order placement failed: ${placeErr.message}`);
+      ctx.completeTask();
+    }
   } catch (err) {
     if (err.status === 401) {
       await ctx.reply(
@@ -119,7 +141,7 @@ async function handlePin(ctx, pin) {
   }
 }
 
-// ─── Task handlers ────────────────────────────────────────────────────────────
+// ─── Plan handler — validates, checks cash, places order ─────────────────────
 
 async function handleParams(ctx, text, data) {
   const { symbol } = data;
@@ -131,111 +153,60 @@ async function handleParams(ctx, text, data) {
       '`buy <low> <high> tp <target> sl <stop> budget <amount>`\n' +
       'or\n' +
       '`buy <low> <high> tp <target> sl <stop> qty <shares>`\n\n' +
-      'Example: `buy 70 72.50 tp 81.30 sl 68 budget 1000`'
+      'Example: `buy 70 73 tp 81.30 sl 68 budget 1000`'
     );
     return;
   }
 
   const { buyLow, buyHigh, takeProfit, stopLoss, budget, fixedQty } = parsed;
 
-  if (buyLow >= buyHigh) {
-    await ctx.reply('❌ Buy low must be less than buy high.');
-    return;
-  }
-  if (takeProfit <= buyHigh) {
-    await ctx.reply('❌ Take profit must be above the buy high.');
-    return;
-  }
-  if (stopLoss >= buyLow) {
-    await ctx.reply('❌ Stop loss must be below buy low.');
-    return;
-  }
-  if (budget != null && budget <= 0) {
-    await ctx.reply('❌ Budget must be greater than 0.');
-    return;
-  }
-  if (fixedQty != null && fixedQty <= 0) {
-    await ctx.reply('❌ Quantity must be greater than 0.');
-    return;
-  }
+  if (buyLow >= buyHigh)       { await ctx.reply('❌ Buy low must be less than buy high.'); return; }
+  if (takeProfit <= buyHigh)   { await ctx.reply('❌ Take profit must be above the buy high.'); return; }
+  if (stopLoss >= buyLow)      { await ctx.reply('❌ Stop loss must be below buy low.'); return; }
+  if (budget != null && budget <= 0) { await ctx.reply('❌ Budget must be greater than 0.'); return; }
+  if (fixedQty != null && fixedQty <= 0) { await ctx.reply('❌ Quantity must be greater than 0.'); return; }
 
-  const midpoint = (buyLow + buyHigh) / 2;
-  const estQty = fixedQty != null ? fixedQty : calcQty(budget, midpoint);
-
-  const plan = {
-    symbol,
-    buyLow,
-    buyHigh,
-    takeProfit,
-    stopLoss,
-    budget: budget ?? null,
-    qty: fixedQty ?? null,
-    userId: ctx.userId,
-  };
-
-  addAlert(plan);
-
-  const sizeLine = budget != null
-    ? `💰 Budget: $${budget.toFixed(2)} (~${estQty} shares at midpoint $${midpoint.toFixed(2)})`
-    : `💰 Quantity: ${estQty} shares`;
-
-  await ctx.reply(
-    `✅ Trade plan set for *${symbol}*\n` +
-    `📈 Buy zone: $${buyLow.toFixed(2)} – $${buyHigh.toFixed(2)}\n` +
-    `🎯 Take profit: $${takeProfit.toFixed(2)} (${signedPct(midpoint, takeProfit)} from midpoint)\n` +
-    `🛑 Stop loss: $${stopLoss.toFixed(2)} (${signedPct(midpoint, stopLoss)} from midpoint)\n` +
-    `${sizeLine}\n` +
-    `${sandboxTag() ? sandboxTag() + ' ' : ''}Monitoring price every 60s...`
-  );
-
-  ctx.completeTask();
-}
-
-async function handleConfirmation(ctx, text, data) {
-  const lower = text.toLowerCase().trim();
-
-  if (lower === 'cancel') {
-    await ctx.reply('Alert dismissed.');
-    ctx.completeTask();
-    return;
-  }
-
-  if (lower !== 'confirm') {
-    await ctx.reply('Reply *confirm* to place orders, or *cancel* to dismiss.');
-    return;
-  }
-
-  const { symbol, triggerPrice, takeProfit, stopLoss, budget, qty: fixedQty } = data;
-  const qty = fixedQty != null ? fixedQty : calcQty(budget, triggerPrice);
+  const limitPrice = buyHigh;
+  const qty = fixedQty ?? calcQty(budget, limitPrice);
 
   if (qty <= 0) {
-    await ctx.reply(`❌ Calculated quantity is 0. Budget $${budget?.toFixed(2)} is less than price $${triggerPrice?.toFixed(2)}.`);
-    ctx.completeTask();
+    await ctx.reply(`❌ Budget $${budget?.toFixed(2)} is less than the limit price $${limitPrice.toFixed(2)}.`);
     return;
   }
 
-  await ctx.reply('⏳ Placing BUY order...');
+  const plan = { symbol, limitPrice, qty, takeProfit, stopLoss, buyLow, buyHigh, budget };
+
+  // Store plan in task data — needed if 401 triggers re-auth mid-flow
+  ctx.updateTask('placing_order', plan);
+
+  // Cash balance check
+  try {
+    const { cash, cost, sufficient } = await checkCashBalance(qty, limitPrice);
+    if (!sufficient) {
+      await ctx.reply(
+        `⚠️ *Insufficient cash — order not placed.*\n\n` +
+        `Order cost:      $${cost.toFixed(2)} (${qty} × $${limitPrice.toFixed(2)})\n` +
+        `Cash available:  $${cash.toFixed(2)}\n` +
+        `Shortfall:       $${(cost - cash).toFixed(2)}\n\n` +
+        `Reduce your budget and try again with /trade ${symbol}.`
+      );
+      ctx.completeTask();
+      return;
+    }
+    logger.info(`Cash check OK: cost $${cost.toFixed(2)} vs available $${cash.toFixed(2)} for ${symbol}`);
+  } catch (err) {
+    logger.warn(`Cash balance check failed for ${symbol}: ${err.message} — proceeding`);
+    await ctx.reply(`⚠️ Could not verify cash balance (${err.message}) — proceeding with order.`);
+  }
+
+  await ctx.reply(`⏳ Placing BUY LIMIT order for ${symbol}...`);
 
   try {
-    const { buyOrderId, accountIdKey, verification } = await placeBuyOrder(symbol, qty, triggerPrice);
-
-    const tag = sandboxTag();
-    const v = verification?.[String(buyOrderId)];
-    const idStr = buyOrderId ? ` — #${buyOrderId}` : '';
-    const statusStr = v?.found ? ` ✓ ${v.status}` : buyOrderId ? ' ⚠️ unverified' : '';
-
-    await ctx.reply(
-      `✅ BUY ${qty} ${symbol} @ $${triggerPrice.toFixed(2)} (LIMIT, GTC)${idStr}${statusStr}${tag}\n\n` +
-      `Monitoring for fill — TP ($${takeProfit.toFixed(2)}) and SL ($${stopLoss.toFixed(2)}) will be placed automatically once the buy executes.`
-    );
-
-    addPendingFill({ symbol, userId: ctx.userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss });
-    ctx.completeTask();
+    await placeAndTrack(ctx, plan);
   } catch (err) {
-    logger.error(`Failed to place trade orders for ${symbol}: ${err.message}`, { stack: err.stack });
+    logger.error(`Failed to place trade order for ${symbol}: ${err.message}`, { stack: err.stack });
 
     if (err.status === 401) {
-      // Token expired — start inline re-auth, keep task alive
       try {
         await startReAuth(ctx);
       } catch (reAuthErr) {
@@ -244,7 +215,7 @@ async function handleConfirmation(ctx, text, data) {
         ctx.completeTask();
       }
     } else {
-      await ctx.reply(`❌ Failed to place orders: ${err.message}\n\nTry again or type /cancel.`);
+      await ctx.reply(`❌ Failed to place order: ${err.message}\n\nTry again or type /cancel.`);
       ctx.completeTask();
     }
   }
@@ -254,7 +225,7 @@ async function handleConfirmation(ctx, text, data) {
 
 const tradeTask = {
   command: '/trade',
-  description: 'Set price alerts and place bracket orders via E*TRADE. Usage: /trade TICKER',
+  description: 'Place a GFD BUY LIMIT + auto TP/SL on fill via E*TRADE. Usage: /trade TICKER',
 
   async start(ctx, args) {
     const { userId } = ctx;
@@ -262,49 +233,28 @@ const tradeTask = {
 
     // /trade list
     if (sub === 'list') {
-      const userAlerts = listAlerts(userId);
       const fills = listPendingFills(userId);
-      const lines = [];
-
-      if (userAlerts.length > 0) {
-        lines.push('*Price Alerts (watching):*');
-        for (const a of userAlerts) {
-          const sizeDesc = a.qty != null ? `${a.qty} shares` : `$${a.budget.toFixed(2)} budget`;
-          lines.push(
-            `• *${a.symbol}*: buy $${a.buyLow.toFixed(2)}–$${a.buyHigh.toFixed(2)} | ` +
-            `TP $${a.takeProfit.toFixed(2)} | SL $${a.stopLoss.toFixed(2)} | ${sizeDesc}`
-          );
-        }
-      }
-
-      if (fills.length > 0) {
-        if (lines.length > 0) lines.push('');
-        lines.push('*Awaiting Fill (BUY placed, exits pending):*');
+      if (fills.length === 0) {
+        await ctx.reply('No pending orders.\nUse /trade TICKER to place one.');
+      } else {
+        const lines = ['*Pending Orders (BUY placed, awaiting fill):*'];
         for (const f of fills) {
+          const limitStr = f.limitPrice != null ? `≤$${f.limitPrice.toFixed(2)}` : 'limit';
           lines.push(
-            `• *${f.symbol}*: BUY ${f.qty} shares #${f.buyOrderId} | ` +
+            `• *${f.symbol}*: BUY ${f.qty} shares ${limitStr} #${f.buyOrderId} | ` +
             `TP $${f.takeProfit.toFixed(2)} | SL $${f.stopLoss.toFixed(2)}`
           );
         }
-      }
-
-      if (lines.length === 0) {
-        await ctx.reply('No active trade alerts or pending fills.\nUse /trade TICKER to set one.');
-      } else {
         await ctx.reply(lines.join('\n'));
       }
       ctx.completeTask();
       return;
     }
 
-    // /trade fill TICKER  (sandbox testing only — simulates a BUY fill)
+    // /trade fill TICKER  (sandbox testing only)
     if (sub === 'fill') {
       const ticker = args?.[1]?.toUpperCase();
-      if (!ticker) {
-        await ctx.reply('Usage: /trade fill TICKER');
-        ctx.completeTask();
-        return;
-      }
+      if (!ticker) { await ctx.reply('Usage: /trade fill TICKER'); ctx.completeTask(); return; }
       if (!config.etrade.sandbox) {
         await ctx.reply('⚠️ /trade fill is only available in sandbox mode.');
         ctx.completeTask();
@@ -313,7 +263,7 @@ const tradeTask = {
       await ctx.reply(`⏳ Simulating fill for ${ticker} — placing exit orders...`);
       const triggered = await forceTriggerFill(ticker, userId);
       if (!triggered) {
-        await ctx.reply(`No pending fill found for ${ticker}.\nUse /trade list to see pending fills.`);
+        await ctx.reply(`No pending order found for ${ticker}.\nUse /trade list to see pending orders.`);
       }
       ctx.completeTask();
       return;
@@ -322,13 +272,28 @@ const tradeTask = {
     // /trade cancel TICKER
     if (sub === 'cancel') {
       const ticker = args?.[1]?.toUpperCase();
-      if (!ticker) {
-        await ctx.reply('Usage: /trade cancel TICKER');
+      if (!ticker) { await ctx.reply('Usage: /trade cancel TICKER'); ctx.completeTask(); return; }
+
+      const fills = listPendingFills(userId).filter(f => f.symbol === ticker);
+      if (fills.length === 0) {
+        await ctx.reply(`No pending order found for ${ticker}.`);
         ctx.completeTask();
         return;
       }
-      const removed = removeAlert(ticker, userId);
-      await ctx.reply(removed ? `Alert for ${ticker} removed.` : `No active alert found for ${ticker}.`);
+
+      const fill = fills[0];
+      try {
+        await cancelBuyOrder(fill.accountIdKey, fill.buyOrderId);
+        removePendingFill(ticker, userId);
+        await ctx.reply(`✅ BUY order #${fill.buyOrderId} for ${ticker} cancelled.`);
+      } catch (err) {
+        logger.error(`Failed to cancel order #${fill.buyOrderId} for ${ticker}: ${err.message}`);
+        removePendingFill(ticker, userId);
+        await ctx.reply(
+          `⚠️ Could not cancel on E*TRADE: ${err.message}\n` +
+          `Removed from local tracking — please cancel #${fill.buyOrderId} manually if still open.`
+        );
+      }
       ctx.completeTask();
       return;
     }
@@ -345,7 +310,7 @@ const tradeTask = {
       return;
     }
 
-    // /trade TICKER — fetch price and prompt for plan
+    // /trade TICKER — fetch current price for reference, then prompt for plan
     const symbol = sub.toUpperCase();
     await ctx.reply(`🔍 Fetching price for ${symbol}...`);
 
@@ -372,23 +337,18 @@ const tradeTask = {
       `\`buy <low> <high> tp <target> sl <stop> budget <amount>\`\n` +
       `or\n` +
       `\`buy <low> <high> tp <target> sl <stop> qty <shares>\`\n\n` +
+      `A BUY LIMIT at your zone ceiling will be placed immediately (GFD).\n\n` +
       `Example:\n` +
       `\`buy ${(quote.price * 0.96).toFixed(2)} ${(quote.price * 0.98).toFixed(2)} tp ${(quote.price * 1.10).toFixed(2)} sl ${(quote.price * 0.94).toFixed(2)} budget 1000\``
     );
   },
 
   async onMessage(ctx, text) {
-    const state = ctx.getState();
-    const taskState = state?.taskState;
+    const taskState = ctx.getState()?.taskState;
     const data = ctx.getTaskData();
 
     if (taskState === 'awaiting_params') {
       await handleParams(ctx, text, data);
-      return;
-    }
-
-    if (taskState === 'awaiting_confirmation') {
-      await handleConfirmation(ctx, text, data);
       return;
     }
 
@@ -397,7 +357,7 @@ const tradeTask = {
       return;
     }
 
-    await ctx.reply('Use /trade TICKER to set a new trade plan.');
+    await ctx.reply('Use /trade TICKER to place a new order.');
     ctx.completeTask();
   },
 
