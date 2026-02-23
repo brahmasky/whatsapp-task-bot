@@ -11,6 +11,9 @@ node_modules/
 # Downloaded files
 downloads/*.pdf
 
+# Runtime data (order state, etc.)
+data/
+
 # macOS
 .DS_Store
 

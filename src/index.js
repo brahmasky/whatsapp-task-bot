@@ -15,6 +15,7 @@ import marketTask, { initScheduler } from './tasks/market/index.js';
 import { stopScheduler } from './tasks/market/scheduler.js';
 import researchTask from './tasks/research/index.js';
 import tradeTask, { initAlertMonitor, stopAlertMonitor } from './tasks/trade/index.js';
+import devTask from './tasks/dev/index.js';
 
 /**
  * WhatsApp Task Bot
@@ -33,6 +34,7 @@ async function main() {
   taskRegistry.register(marketTask);
   taskRegistry.register(researchTask);
   taskRegistry.register(tradeTask);
+  taskRegistry.register(devTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway

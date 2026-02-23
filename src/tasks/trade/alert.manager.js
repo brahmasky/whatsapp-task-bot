@@ -10,12 +10,24 @@
  *
  * GFD orders expire at market close — the monitor will detect EXPIRED status
  * and notify the user so they can re-run /trade the next day if needed.
+ *
+ * State persistence: pending fills are written to data/pending-fills.json on
+ * every change and restored on startup, so a bot restart (nodemon, crash) does
+ * not lose track of open orders.
  */
 
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import cron from 'node-cron';
 import logger from '../../utils/logger.js';
 import { getOrderStatus, placeExitOrders, refreshPortfolioCache } from './order.service.js';
 import config from '../../config/index.js';
+
+const FILLS_FILE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../data/pending-fills.json'
+);
 
 // key: `${SYMBOL}:${userId}`
 // value: { symbol, userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice, placedAt }
@@ -23,6 +35,28 @@ const pendingFills = new Map();
 
 let monitorJob = null;
 let sendFn = null;
+
+// ─── Persistence ──────────────────────────────────────────────────────────────
+
+function _saveFills() {
+  try {
+    const entries = [...pendingFills.values()];
+    fs.writeFileSync(FILLS_FILE, JSON.stringify(entries, null, 2), 'utf-8');
+  } catch (err) {
+    logger.warn(`Could not save pending fills: ${err.message}`);
+  }
+}
+
+function _loadFills() {
+  try {
+    if (!fs.existsSync(FILLS_FILE)) return [];
+    const raw = fs.readFileSync(FILLS_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch (err) {
+    logger.warn(`Could not load pending fills: ${err.message}`);
+    return [];
+  }
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -43,6 +77,7 @@ export function addPendingFill({ symbol, userId, buyOrderId, accountIdKey, qty, 
     limitPrice: limitPrice ?? null,
     placedAt: Date.now(),
   });
+  _saveFills();
   logger.info(`Monitoring fill for BUY ${symbol} #${buyOrderId} (${qty} shares ≤ $${limitPrice})`);
 }
 
@@ -55,6 +90,7 @@ export function removePendingFill(symbol, userId) {
   const existed = pendingFills.has(key);
   if (existed) {
     pendingFills.delete(key);
+    _saveFills();
     logger.info(`Pending fill removed: ${symbol} for user ${userId}`);
   }
   return existed;
@@ -79,12 +115,15 @@ export async function forceTriggerFill(symbol, userId) {
 
   logger.info(`Force-triggering fill for ${symbol} #${fill.buyOrderId} (sandbox test)`);
   pendingFills.delete(key);
+  _saveFills();
   await _placeFillExits(fill);
   return true;
 }
 
 /**
  * Start the 60-second fill monitoring cron job.
+ * Restores any pending fills persisted from a previous run and immediately
+ * checks their status — they may have filled or expired while the bot was down.
  * @param {Function} send - gateway sendFn: ({ type, userId, text }) => Promise<void>
  */
 export function initAlertMonitor(send) {
@@ -93,6 +132,19 @@ export function initAlertMonitor(send) {
   if (monitorJob) {
     monitorJob.stop();
     monitorJob = null;
+  }
+
+  // Restore persisted fills from previous run
+  const restored = _loadFills();
+  if (restored.length > 0) {
+    for (const fill of restored) {
+      const key = `${fill.symbol}:${fill.userId}`;
+      pendingFills.set(key, fill);
+    }
+    logger.info(`Restored ${restored.length} pending fill(s) from disk — checking status now`);
+    // Check immediately rather than waiting up to 60s — orders may have
+    // filled or expired while the bot was down
+    _checkFills().catch(err => logger.error(`Post-restore fill check error: ${err.message}`));
   }
 
   monitorJob = cron.schedule('*/1 * * * *', async () => {
@@ -130,11 +182,13 @@ async function _checkFills() {
       if (status === 'EXECUTED') {
         logger.info(`BUY filled: ${fill.symbol} #${fill.buyOrderId}`);
         pendingFills.delete(key);
+        _saveFills();
         await _placeFillExits(fill);
 
       } else if (status === 'CANCELLED' || status === 'EXPIRED') {
         logger.info(`BUY order ${status}: ${fill.symbol} #${fill.buyOrderId}`);
         pendingFills.delete(key);
+        _saveFills();
         if (sendFn) {
           const msg = status === 'EXPIRED'
             ? `ℹ️ Your GFD BUY order for *${fill.symbol}* expired at market close.\nRun /trade ${fill.symbol} again tomorrow if the setup is still valid.`

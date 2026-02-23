@@ -10,7 +10,8 @@
  *
  * Usage:
  *   /trade UBER                       — set a new trade plan
- *   /trade list                       — show pending orders
+ *   /trade list                       — show pending orders with live E*TRADE status
+ *   /trade track TICKER ORDER_ID ...  — re-register an order after bot restart
  *   /trade cancel UBER                — cancel the pending BUY order on E*TRADE
  *   /trade fill UBER                  — simulate a fill (sandbox only)
  *
@@ -22,7 +23,7 @@
 import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
 import logger from '../../utils/logger.js';
 import { fetchStockQuote } from '../market/sector.service.js';
-import { placeBuyOrder, calcQty, checkCashBalance, cancelBuyOrder, refreshPortfolioCache } from './order.service.js';
+import { placeBuyOrder, calcQty, checkCashBalance, cancelBuyOrder, getOrderStatus, getAuthenticatedService, getFirstBrokerageAccount } from './order.service.js';
 import {
   addPendingFill,
   removePendingFill,
@@ -73,7 +74,6 @@ async function placeAndTrack(ctx, { symbol, limitPrice, qty, takeProfit, stopLos
   const sizeDesc = budget != null ? `$${budget.toFixed(2)} budget` : `${qty} shares`;
 
   addPendingFill({ symbol, userId: ctx.userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice });
-  refreshPortfolioCache().catch(err => logger.warn(`Post-BUY cache refresh failed: ${err.message}`));
 
   await ctx.reply(
     `✅ BUY LIMIT set for *${symbol}*${tag}\n` +
@@ -240,17 +240,98 @@ const tradeTask = {
       const fills = listPendingFills(userId);
       if (fills.length === 0) {
         await ctx.reply('No pending orders.\nUse /trade TICKER to place one.');
-      } else {
-        const lines = ['*Pending Orders (BUY placed, awaiting fill):*'];
-        for (const f of fills) {
-          const limitStr = f.limitPrice != null ? `≤$${f.limitPrice.toFixed(2)}` : 'limit';
-          lines.push(
-            `• *${f.symbol}*: BUY ${f.qty} shares ${limitStr} #${f.buyOrderId} | ` +
-            `TP $${f.takeProfit.toFixed(2)} | SL $${f.stopLoss.toFixed(2)}`
-          );
-        }
-        await ctx.reply(lines.join('\n'));
+        ctx.completeTask();
+        return;
       }
+
+      await ctx.reply('Checking order status with E*TRADE...');
+
+      const lines = ['*Pending Orders:*'];
+      for (const f of fills) {
+        const limitStr = f.limitPrice != null ? `≤$${f.limitPrice.toFixed(2)}` : 'limit';
+        let statusStr = '';
+        try {
+          const status = await getOrderStatus(f.accountIdKey, f.buyOrderId);
+          const emoji = status === 'EXECUTED' ? '✅' : status === 'EXPIRED' || status === 'CANCELLED' ? '❌' : '⏳';
+          statusStr = ` — ${emoji} ${status}`;
+        } catch (err) {
+          statusStr = ` — ⚠️ status unavailable`;
+        }
+        lines.push(
+          `• *${f.symbol}* #${f.buyOrderId}${statusStr}\n` +
+          `  BUY ${f.qty} @ ${limitStr} | TP $${f.takeProfit.toFixed(2)} | SL $${f.stopLoss.toFixed(2)}`
+        );
+      }
+      await ctx.reply(lines.join('\n'));
+      ctx.completeTask();
+      return;
+    }
+
+    // /trade track TICKER ORDER_ID qty N tp X sl Y [limit P]
+    // Re-register an existing order with the fill monitor after a bot restart
+    if (sub === 'track') {
+      const rest = args.slice(1).join(' ');
+      const m = rest.match(/^(\w+)\s+(\d+)\s+qty\s+(\d+)\s+tp\s+([\d.]+)\s+sl\s+([\d.]+)(?:\s+limit\s+([\d.]+))?/i);
+      if (!m) {
+        await ctx.reply(
+          'Usage: /trade track TICKER ORDER_ID qty N tp X sl Y [limit P]\n\n' +
+          'Example:\n  /trade track MU 267 qty 2 tp 420 sl 390 limit 401.18'
+        );
+        ctx.completeTask();
+        return;
+      }
+      const symbol = m[1].toUpperCase();
+      const buyOrderId = parseInt(m[2], 10);
+      const qty = parseInt(m[3], 10);
+      const takeProfit = parseFloat(m[4]);
+      const stopLoss = parseFloat(m[5]);
+      const limitPrice = m[6] ? parseFloat(m[6]) : null;
+
+      await ctx.reply(`🔍 Verifying order #${buyOrderId} on E*TRADE...`);
+
+      let accountIdKey;
+      try {
+        const service = await getAuthenticatedService(userId);
+        accountIdKey = await getFirstBrokerageAccount(service);
+      } catch (err) {
+        await ctx.reply(`❌ Could not connect to E*TRADE: ${err.message}`);
+        ctx.completeTask();
+        return;
+      }
+
+      let status;
+      try {
+        status = await getOrderStatus(accountIdKey, buyOrderId);
+      } catch (err) {
+        await ctx.reply(`❌ Could not fetch order status: ${err.message}`);
+        ctx.completeTask();
+        return;
+      }
+
+      if (status === 'EXECUTED') {
+        await ctx.reply(
+          `⚠️ Order #${buyOrderId} is already *EXECUTED* — not adding to monitor.\n` +
+          `Please place TP/SL manually:\n` +
+          `• SELL ${qty} ${symbol} @ $${takeProfit.toFixed(2)} (take profit)\n` +
+          `• SELL ${qty} ${symbol} @ $${stopLoss.toFixed(2)} (stop loss)`
+        );
+        ctx.completeTask();
+        return;
+      }
+
+      if (status === 'CANCELLED' || status === 'EXPIRED') {
+        await ctx.reply(`ℹ️ Order #${buyOrderId} is ${status} — nothing to track.`);
+        ctx.completeTask();
+        return;
+      }
+
+      addPendingFill({ symbol, userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice });
+      const limitStr = limitPrice ? ` ≤$${limitPrice.toFixed(2)}` : '';
+      await ctx.reply(
+        `✅ Now tracking *${symbol}* #${buyOrderId} (${status})\n` +
+        `BUY ${qty} shares${limitStr} | TP $${takeProfit.toFixed(2)} | SL $${stopLoss.toFixed(2)}\n\n` +
+        `Fill monitor will auto-place exit orders on execution.`
+      );
       ctx.completeTask();
       return;
     }

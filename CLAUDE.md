@@ -48,12 +48,12 @@ No test or lint scripts are configured.
 ┌────────────┼─────────────────────────────────┬────────────┐
 │            │                    │            │            │
 ▼            ▼                    ▼            ▼            ▼
-┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
-│ /invoice │ │ /system  │ │ /portfolio │ │  /market   │ │ /research  │
-│          │ │          │ │            │ │            │ │            │
-│Playwright│ │ macOS    │ │ Claude     │ │ Scheduled  │ │ Sonnet     │
-│+ Email   │ │ Stats    │ │ Agent      │ │ Updates    │ │ Agent Loop │
-└────┬─────┘ └──────────┘ └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
+┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐
+│ /invoice │ │ /system  │ │ /portfolio │ │  /market   │ │ /research  │ │   /dev     │
+│          │ │          │ │            │ │            │ │            │ │            │
+│Playwright│ │ macOS    │ │ Claude     │ │ Scheduled  │ │ Sonnet     │ │ Claude     │
+│+ Email   │ │ Stats    │ │ Agent      │ │ Updates    │ │ Agent Loop │ │ Code CLI   │
+└────┬─────┘ └──────────┘ └─────┬──────┘ └─────┬──────┘ └─────┬──────┘ └─────┬──────┘
      │                          │              │
      ▼                          │              │
 ┌──────────┐                    │              │
@@ -184,7 +184,7 @@ No test or lint scripts are configured.
 ## Key Constraints
 
 - **Single active task per user** - state machine tracks one task at a time
-- **In-memory state** - lost on restart, no database
+- **In-memory state** - lost on restart, no database (exception: trade fill monitor persists to `data/pending-fills.json`)
 - **macOS-specific** - Keychain service only works on macOS
 - **First run requires QR scan** - session stored in `.baileys_auth/`
 - **Authorization** - only self-messages or users in `ALLOWED_USERS` env var
@@ -316,14 +316,52 @@ The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitor
 
 **Cash check:** `checkCashBalance()` fetches live `cashAvailableForInvestment` from E*TRADE before placing. Blocks if insufficient. Non-blocking on API failure (E*TRADE will also reject).
 
-**Portfolio cache:** Refreshed (fire-and-forget) after BUY placed and again after fill + exit orders placed, so `/market` P&L stays current.
+**Portfolio cache:** Refreshed (fire-and-forget) after fill + exit orders placed, so `/market` P&L stays current. Not refreshed after BUY placed (order is pending, portfolio unchanged).
+
+**Fill monitor persistence:** Pending fills are written to `data/pending-fills.json` on every change. On startup, the monitor restores from disk and immediately checks status — so a bot restart (nodemon, crash) does not lose track of open orders.
 
 **Token expiry:** Both `/trade` and `/research` inline trade handle re-auth inline (`awaiting_pin` state). Plan data is preserved in task state so the order is placed automatically after PIN exchange.
 
+**Commands:**
+- `/trade TICKER` — set a new trade plan
+- `/trade list` — show tracked orders with live E*TRADE status
+- `/trade cancel TICKER` — cancel the pending BUY order on E*TRADE
+- `/trade track TICKER ORDER_ID qty N tp X sl Y [limit P]` — re-register an existing order after bot restart (recovery only)
+- `/trade fill TICKER` — simulate a fill (sandbox only)
+
 **Key files:**
 - `src/tasks/trade/index.js` - task definition, param parsing, re-auth flow
-- `src/tasks/trade/order.service.js` - `placeBuyOrder(symbol, qty, price, orderTerm)`, `cancelBuyOrder()`, `checkCashBalance()`, `refreshPortfolioCache()`
-- `src/tasks/trade/alert.manager.js` - fill monitor only (60s cron, `_checkFills`, `_placeFillExits`)
+- `src/tasks/trade/order.service.js` - `placeBuyOrder()`, `cancelBuyOrder()`, `checkCashBalance()`, `getOrderStatus()`, `refreshPortfolioCache()`
+- `src/tasks/trade/alert.manager.js` - fill monitor (60s cron, disk persistence, `_checkFills`, `_placeFillExits`)
+
+## Bot Development (/dev)
+
+The `/dev` command delegates codebase questions and code changes to the locally-installed Claude Code CLI — zero API cost, uses the Claude Pro subscription from `~/.claude/`.
+
+**Handles two kinds of requests:**
+
+- **Questions** — "how does X work?", "why does Y do Z?" — answered immediately, no confirmation loop
+- **Build tasks** — "add X", "fix Y", "refactor Z" — two-phase plan → implement flow
+
+**Flow (build tasks):**
+1. `/dev add a /weather command using wttr.in`
+2. Claude Code reads the codebase and outputs a plan (no file writes)
+3. User replies `confirm`, `update: <feedback>` (revise plan), or `discard`
+4. On confirm: Claude Code implements in a git worktree under `/tmp/` (outside project dir, never watched by nodemon)
+5. Diff stat shown — user replies `confirm` to apply or `discard` to cancel
+6. On confirm: `git merge` writes to `src/` → nodemon detects change → bot restarts with new code
+
+**Intent detection:** Claude Code self-classifies its response with `[ANSWER]` (Q&A) or `[PLAN]` (build task). Bot branches on this marker — Q&A completes immediately, build tasks enter the confirmation loop.
+
+**Key design decisions:**
+- Worktree in `/tmp/` — nodemon never watches it, so file writes during implementation don't restart the bot mid-execution
+- `ANTHROPIC_API_KEY` is stripped from the subprocess env — Claude Code uses `~/.claude/` Pro subscription credentials, not the bot's API key
+- `stdin` closed (`ignore`) — prevents Claude Code from blocking on any interactive prompt
+
+**Key files:**
+- `src/tasks/dev/index.js` - full task implementation (planning, Q&A detection, implementation, git ops)
+
+**Requires:** Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`) and authenticated via `claude` in terminal.
 
 ## Environment Variables
 
