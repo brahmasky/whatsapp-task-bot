@@ -81,8 +81,12 @@ class WhatsAppService {
         });
 
         if (shouldReconnect) {
-          logger.info('Reconnecting...');
-          this.initialize();
+          logger.info('Reconnecting in 3s...');
+          setTimeout(() => {
+            this.initialize().catch(err => {
+              logger.error('Reconnection failed:', { error: err.message, stack: err.stack });
+            });
+          }, 3000);
         } else {
           logger.error('Logged out. Please delete .baileys_auth folder and restart.');
         }

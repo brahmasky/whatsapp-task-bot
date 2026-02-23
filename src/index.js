@@ -115,6 +115,20 @@ async function main() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
+// Catch unhandled promise rejections and uncaught exceptions so crashes are
+// always logged (e.g. a failed reconnection attempt silently killing the process)
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection:', {
+    error: reason?.message ?? String(reason),
+    stack: reason?.stack,
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception:', { error: err.message, stack: err.stack });
+  process.exit(1);
+});
+
 // Run
 main().catch((error) => {
   logger.error('Fatal error:', { error: error.message, stack: error.stack });
