@@ -289,7 +289,7 @@ The `/research TICKER` command fetches fundamentals and runs a Sonnet agent loop
 - Sentiment: news tone from `get_news` tool call
 
 **Entry plan (BUY / STRONG BUY only):**
-Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss`, `rrRatio`, `notes` based on 7-day OHLCV support levels. After the report, task stays alive in `awaiting_trade` state. User replies `trade 1000` (budget) or `trade qty 14` (fixed shares) to place a GFD BUY LIMIT at `entryHigh` immediately — same order + fill-monitor path as `/trade`. Re-auth handled inline if token expired.
+Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss`, `rrRatio`, `notes` based on 7-day OHLCV support levels. After the report, task stays alive in `awaiting_trade` state. User replies `trade 1000` (budget) or `trade qty 14` (fixed shares) to place a GFD BUY LIMIT at the golden ratio of the entry zone (`entryLow + (entryHigh - entryLow) * 0.618`) immediately — same order + fill-monitor path as `/trade`. Re-auth handled inline if token expired.
 
 **Key files:**
 - `src/tasks/research/fundamentals.service.js` - Yahoo (yahoo-finance2) + FMP data fetching, OHLCV
@@ -305,12 +305,12 @@ The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitor
 **Flow:**
 1. `/trade UBER` — fetch current price for reference, prompt for plan
 2. Enter: `buy 70 73 tp 81.30 sl 68 budget 1000`
-3. Bot checks live cash balance (`getAccountBalances` — real-time API call), then places **BUY LIMIT at $73** (zone ceiling), **Good for Day**
+3. Bot checks live cash balance (`getAccountBalances` — real-time API call), then places **BUY LIMIT at golden ratio of zone** (`buyLow + (buyHigh - buyLow) * 0.618`), **Good for Day**
 4. E*TRADE handles execution — no price polling loop in the bot
 5. Fill monitor (`alert.manager.js`) polls every 60s — on EXECUTED, automatically places TP (LIMIT SELL) + SL (STOP SELL) using `GOOD_UNTIL_CANCEL`
 6. On GFD EXPIRED, user is notified to re-run the next day
 
-**Order type:** BUY LIMIT at `buyHigh`. Fills at `buyHigh` or better (cheaper) anywhere in the zone.
+**Order type:** BUY LIMIT at golden ratio (61.8%) of the buy zone. Better average cost than the zone ceiling — fills at the limit price or better.
 
 **Order sequencing:** BUY placed first. TP and SL placed only after BUY is EXECUTED — avoids accidental short sell.
 

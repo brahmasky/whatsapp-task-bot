@@ -166,7 +166,7 @@ async function handleParams(ctx, text, data) {
   if (budget != null && budget <= 0) { await ctx.reply('❌ Budget must be greater than 0.'); return; }
   if (fixedQty != null && fixedQty <= 0) { await ctx.reply('❌ Quantity must be greater than 0.'); return; }
 
-  const limitPrice = buyHigh;
+  const limitPrice = parseFloat((buyLow + (buyHigh - buyLow) * 0.618).toFixed(2));
   const qty = fixedQty ?? calcQty(budget, limitPrice);
 
   if (qty <= 0) {

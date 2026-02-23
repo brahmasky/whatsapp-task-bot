@@ -118,7 +118,7 @@ The `/research` command runs a Sonnet agent loop that scores a stock across four
 Data sources: Yahoo Finance `quoteSummary` via yahoo-finance2 (primary, no key needed, better international coverage) with FMP `/stable/` API as fallback when Yahoo returns sparse data (free tier = 250 calls/day).
 Requires `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional but recommended. Est. cost: ~$0.05/call.
 
-**Entry plan (BUY / STRONG BUY only):** The agent produces an entry zone, take profit, stop loss, and R/R ratio based on 7-day OHLCV support levels. After receiving the report, reply `trade 1000` (budget) or `trade qty 14` (shares) to place the order inline — no need to switch to `/trade`.
+**Entry plan (BUY / STRONG BUY only):** The agent produces an entry zone, take profit, stop loss, and R/R ratio based on 7-day OHLCV support levels. After receiving the report, reply `trade 1000` (budget) or `trade qty 14` (shares) to place the order inline — no need to switch to `/trade`. The limit price is set at the golden ratio (61.8%) of the entry zone for a better average cost than the ceiling.
 
 ### Bracket Trading (/trade)
 
@@ -127,11 +127,11 @@ The `/trade` command places a GFD BUY LIMIT order immediately and automatically 
 **Flow:**
 1. `/trade UBER` — fetch current price for reference, prompt for plan
 2. Enter plan: `buy 70 73 tp 81.30 sl 68 budget 1000`
-3. Bot checks live cash balance, then places a **BUY LIMIT at $73** (zone ceiling), **Good for Day**
+3. Bot checks live cash balance, then places a **BUY LIMIT at the golden ratio of the zone** (`$70 + ($73-$70) × 0.618 = $71.85`), **Good for Day**
 4. E*TRADE handles execution — no price monitoring loop
 5. Fill monitor polls every 60s — when BUY executes, bot automatically places TP + SL
 
-**Order type:** BUY LIMIT at `buyHigh` (zone ceiling), GFD. Fills at `buyHigh` or better (cheaper) anywhere in the zone. Expires at market close if not filled — run `/trade` again the next day.
+**Order type:** BUY LIMIT at the golden ratio (61.8%) of the buy zone, GFD. Better average cost than buying at the zone ceiling — fills at the limit price or better. Expires at market close if not filled — run `/trade` again the next day.
 
 **Order sequencing:** BUY is placed first. TP and SL are only placed after the BUY is confirmed EXECUTED — avoids accidental short sell.
 

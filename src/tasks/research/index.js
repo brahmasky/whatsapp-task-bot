@@ -225,8 +225,10 @@ const researchTask = {
     // Option C: keep task alive so user can set an alert inline on BUY/STRONG BUY
     if (analysis?.entryPlan && ['BUY', 'STRONG BUY'].includes(analysis.recommendation)) {
       ctx.updateTask('awaiting_trade', { symbol, entryPlan: analysis.entryPlan });
+      const { entryLow: _l, entryHigh: _h } = analysis.entryPlan;
+      const _goldenPrice = parseFloat((_l + (_h - _l) * 0.618).toFixed(2));
       await ctx.reply(
-        `💡 Reply \`trade <budget>\` to place a GFD BUY LIMIT at $${analysis.entryPlan.entryHigh.toFixed(2)} (e.g. \`trade 1000\`)\n` +
+        `💡 Reply \`trade <budget>\` to place a GFD BUY LIMIT at $${_goldenPrice.toFixed(2)} (golden ratio of zone $${_l.toFixed(2)}–$${_h.toFixed(2)}, e.g. \`trade 1000\`)\n` +
         `or \`trade qty <shares>\` for a fixed quantity.\n` +
         `Type \`skip\` to dismiss.`
       );
@@ -298,7 +300,7 @@ const researchTask = {
     const fixedQty = qtyMatch    ? parseInt(qtyMatch[1], 10)  : null;
 
     const { entryLow, entryHigh, takeProfit, stopLoss } = entryPlan;
-    const limitPrice = entryHigh;
+    const limitPrice = parseFloat((entryLow + (entryHigh - entryLow) * 0.618).toFixed(2));
     const qty = fixedQty ?? calcQty(budget, limitPrice);
 
     if (qty <= 0) {
