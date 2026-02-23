@@ -304,8 +304,10 @@ const researchTask = {
     const qty = fixedQty ?? calcQty(budget, limitPrice);
 
     if (qty <= 0) {
-      await ctx.reply(`❌ Budget $${budget?.toFixed(2)} is less than the limit price $${limitPrice.toFixed(2)}.`);
-      ctx.completeTask();
+      await ctx.reply(
+        `❌ Budget $${budget?.toFixed(2)} is less than the limit price $${limitPrice.toFixed(2)}.\n` +
+        `Minimum budget: $${limitPrice.toFixed(2)} for 1 share. Try again or type \`skip\` to dismiss.`
+      );
       return;
     }
 
@@ -317,14 +319,18 @@ const researchTask = {
     try {
       const { cash, cost, sufficient } = await checkCashBalance(qty, limitPrice);
       if (!sufficient) {
+        const maxShares = Math.floor(cash / limitPrice);
+        const suggestion = maxShares > 0
+          ? `Try \`trade qty ${maxShares}\` (${maxShares} shares @ $${limitPrice.toFixed(2)}) or type \`skip\` to dismiss.`
+          : 'Insufficient cash for even 1 share. Type `skip` to dismiss.';
         await ctx.reply(
           `⚠️ *Insufficient cash — order not placed.*\n\n` +
           `Order cost:      $${cost.toFixed(2)} (${qty} × $${limitPrice.toFixed(2)})\n` +
           `Cash available:  $${cash.toFixed(2)}\n` +
           `Shortfall:       $${(cost - cash).toFixed(2)}\n\n` +
-          `Use /trade ${symbol} to set a smaller budget.`
+          suggestion
         );
-        ctx.completeTask();
+        ctx.updateTask('awaiting_trade', { symbol, entryPlan });
         return;
       }
     } catch (err) {

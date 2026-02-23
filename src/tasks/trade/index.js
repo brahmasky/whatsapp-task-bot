@@ -183,14 +183,18 @@ async function handleParams(ctx, text, data) {
   try {
     const { cash, cost, sufficient } = await checkCashBalance(qty, limitPrice);
     if (!sufficient) {
+      const maxShares = Math.floor(cash / limitPrice);
+      const suggestion = maxShares > 0
+        ? `Try \`buy ${buyLow} ${buyHigh} tp ${takeProfit} sl ${stopLoss} qty ${maxShares}\``
+        : 'Insufficient cash for even 1 share.';
       await ctx.reply(
         `⚠️ *Insufficient cash — order not placed.*\n\n` +
         `Order cost:      $${cost.toFixed(2)} (${qty} × $${limitPrice.toFixed(2)})\n` +
         `Cash available:  $${cash.toFixed(2)}\n` +
         `Shortfall:       $${(cost - cash).toFixed(2)}\n\n` +
-        `Reduce your budget and try again with /trade ${symbol}.`
+        `${suggestion} or type /cancel to abort.`
       );
-      ctx.completeTask();
+      ctx.updateTask('awaiting_params', { symbol });
       return;
     }
     logger.info(`Cash check OK: cost $${cost.toFixed(2)} vs available $${cash.toFixed(2)} for ${symbol}`);
