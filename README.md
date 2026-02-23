@@ -13,6 +13,8 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 - **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
 - **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP fallback
 - **GFD Bracket Trading** - Place BUY LIMIT orders instantly (Good for Day) with automatic TP + SL on fill via E*TRADE
+- **Persistent Fill Monitor** - Pending orders survive bot restarts via `data/pending-fills.json`
+- **Bot Development** - Delegate codebase questions and code changes to Claude Code CLI (zero API cost)
 - **System Monitoring** - macOS CPU, memory, disk, and temperature stats
 
 ## Setup
@@ -47,11 +49,11 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
               ┌──────────────────────────────────────────────────────────────────────┐
               │              │               │              │                │        │
               ▼              ▼               ▼              ▼                ▼        │
-        ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌──────────┐  ┌──────────────┐  │
-        │ /invoice │  │ /system  │  │ /portfolio │  │ /market  │  │  /research   │  │
-        │Playwright│  │ macOS    │  │   Claude   │  │Scheduled │  │ Sonnet Agent │  │
-        │+ Keychain│  │  Stats   │  │   Agent   │  │+ Deep AI │  │ Yahoo + FMP  │  │
-        └──────────┘  └──────────┘  └─────┬──────┘  └────┬─────┘  └──────────────┘  │
+        ┌──────────┐  ┌──────────┐  ┌────────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐  │
+        │ /invoice │  │ /system  │  │ /portfolio │  │ /market  │  │  /research   │  │   /dev   │  │
+        │Playwright│  │ macOS    │  │   Claude   │  │Scheduled │  │ Sonnet Agent │  │  Claude  │  │
+        │+ Keychain│  │  Stats   │  │   Agent    │  │+ Deep AI │  │ Yahoo + FMP  │  │ Code CLI │  │
+        └──────────┘  └──────────┘  └─────┬──────┘  └────┬─────┘  └──────────────┘  └──────────┘  │
                                           │              │                            │
               ┌───────────────────────────┘              │          ┌──────────────┐  │
               │                                          │          │    /trade    │◄─┘
@@ -100,9 +102,11 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 | `/market status` | Scheduler info and next update times |
 | `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals, recommendation, and entry plan |
 | `/trade TICKER` | Place a GFD BUY LIMIT order with auto TP + SL on fill via E*TRADE |
-| `/trade list` | Show pending BUY orders awaiting fill |
+| `/trade list` | Show pending orders with live E*TRADE status |
 | `/trade cancel TICKER` | Cancel the pending BUY order on E*TRADE |
+| `/trade track TICKER ORDER_ID ...` | Re-register an existing order after bot restart (recovery) |
 | `/trade fill TICKER` | Simulate a fill for sandbox testing |
+| `/dev <question or instruction>` | Ask Claude Code a question about the codebase, or delegate a code change |
 
 ### Research Scoring
 
@@ -139,7 +143,30 @@ The `/trade` command places a GFD BUY LIMIT order immediately and automatically 
 
 **Token expiry:** E*TRADE OAuth tokens expire at midnight ET. Both `/trade` and `/research` inline trade handle re-authentication inline without needing to switch to `/portfolio`.
 
+**Fill monitor persistence:** Pending orders are saved to `data/pending-fills.json` on every change. On restart, the monitor restores from disk and immediately checks status — a bot restart never loses track of an open order. Use `/trade list` anytime to see live E*TRADE status.
+
 **Sandbox testing:** Use `/trade fill TICKER` to simulate a fill and trigger exit order placement (sandbox only — blocked in production).
+
+### Bot Development (/dev)
+
+The `/dev` command lets you interact with the codebase via natural language — either asking questions or delegating code changes — using the locally-installed Claude Code CLI. Zero API cost: uses your Claude Pro subscription.
+
+**Questions** (answered immediately, no confirmation needed):
+```
+/dev how does the fill monitor work?
+/dev why does /research fall back to FMP?
+/dev what files handle E*TRADE auth?
+```
+
+**Code changes** (plan → confirm → implement):
+```
+/dev add a /weather command that shows forecast from wttr.in
+/dev refactor the market scheduler to support configurable times
+```
+
+For build tasks, Claude Code first reads the codebase and outputs a plan. You can `confirm`, give `update: <feedback>` to revise, or `discard`. On confirm, implementation runs in a git worktree under `/tmp/` (outside the project directory, so nodemon doesn't restart mid-execution). After implementation, review the diff and `confirm` to merge or `discard` to cancel.
+
+**Requires:** Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`) and authenticated via `claude` in your terminal.
 
 ### Market Analysis Tiers
 
