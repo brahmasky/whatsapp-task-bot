@@ -50,27 +50,23 @@ class WhatsAppService {
     const authPath = path.join(process.cwd(), '.baileys_auth');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
-    // Create socket connection (with silent logger to reduce noise)
+    const baileysDebug = process.env.LOG_LEVEL === 'debug';
+    const baileysLogger = {
+      level: baileysDebug ? 'info' : 'silent',
+      trace: () => {},
+      debug: () => {},
+      info:  baileysDebug ? (msg, ...a) => { if (!shouldSuppress([msg, ...a])) logger.debug(`[baileys] ${JSON.stringify(msg)}`); } : () => {},
+      warn:  (msg, ...a) => { if (!shouldSuppress([msg, ...a])) logger.warn(`[baileys] ${JSON.stringify(msg)}`); },
+      error: (msg) => logger.error(`[baileys] ${JSON.stringify(msg)}`),
+      fatal: (msg) => logger.error(`[baileys:fatal] ${JSON.stringify(msg)}`),
+      child: () => baileysLogger,
+    };
+
+    // Create socket connection
     this.socket = makeWASocket({
       auth: state,
       browser: ['WhatsApp Task Bot', 'Chrome', '120.0.0'],
-      logger: {
-        level: 'silent',
-        trace: () => {},
-        debug: () => {},
-        info: () => {},
-        warn: () => {},
-        error: (msg) => logger.error('Baileys error:', msg),
-        fatal: (msg) => logger.error('Baileys fatal:', msg),
-        child: () => ({
-          trace: () => {},
-          debug: () => {},
-          info: () => {},
-          warn: () => {},
-          error: () => {},
-          fatal: () => {},
-        }),
-      },
+      logger: baileysLogger,
     });
 
     // Handle credential updates
