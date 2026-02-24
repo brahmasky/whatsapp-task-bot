@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, Browsers } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { readFileSync } from 'fs';
 import { inspect } from 'util';
@@ -65,7 +65,7 @@ class WhatsAppService {
     // Create socket connection
     this.socket = makeWASocket({
       auth: state,
-      browser: ['WhatsApp Task Bot', 'Chrome', '120.0.0'],
+      browser: Browsers.macOS('Chrome'),
       logger: baileysLogger,
     });
 
