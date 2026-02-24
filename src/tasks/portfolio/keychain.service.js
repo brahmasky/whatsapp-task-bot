@@ -1,10 +1,11 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import logger from '../../utils/logger.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const SERVICE_NAME = 'ETrade';
 const KEYCHAIN_NAME = 'TPGBot.keychain-db';
 const KEYCHAIN_PATH = path.join(os.homedir(), 'Library', 'Keychains', KEYCHAIN_NAME);
@@ -17,16 +18,9 @@ export const SHARED_USER_ID = 'etrade-default-user';
  */
 async function ensureKeychain() {
   if (!fs.existsSync(KEYCHAIN_PATH)) {
-    await execAsync(`security create-keychain -p "" "${KEYCHAIN_NAME}"`);
+    await execFileAsync('security', ['create-keychain', '-p', '', KEYCHAIN_NAME]);
   }
-  await execAsync(`security unlock-keychain -p "" "${KEYCHAIN_PATH}"`);
-}
-
-/**
- * Escapes special characters for shell commands
- */
-function escapeForShell(str) {
-  return str.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+  await execFileAsync('security', ['unlock-keychain', '-p', '', KEYCHAIN_PATH]);
 }
 
 /**
@@ -42,11 +36,11 @@ export async function getStoredTokens(userId) {
     const tokenKey = `${SERVICE_NAME}:oauth_token:${userId}`;
     const secretKey = `${SERVICE_NAME}:oauth_secret:${userId}`;
 
-    const { stdout: oauthToken } = await execAsync(
-      `security find-generic-password -s "${tokenKey}" -w "${KEYCHAIN_PATH}"`
+    const { stdout: oauthToken } = await execFileAsync(
+      'security', ['find-generic-password', '-s', tokenKey, '-w', KEYCHAIN_PATH]
     );
-    const { stdout: oauthTokenSecret } = await execAsync(
-      `security find-generic-password -s "${secretKey}" -w "${KEYCHAIN_PATH}"`
+    const { stdout: oauthTokenSecret } = await execFileAsync(
+      'security', ['find-generic-password', '-s', secretKey, '-w', KEYCHAIN_PATH]
     );
 
     return {
@@ -74,18 +68,18 @@ export async function storeTokens(userId, oauthToken, oauthTokenSecret) {
     const secretKey = `${SERVICE_NAME}:oauth_secret:${userId}`;
 
     // Store oauth token (use -U to update if exists)
-    await execAsync(
-      `security add-generic-password -a "${userId}" -s "${tokenKey}" -l "${tokenKey}" -U -w "${escapeForShell(oauthToken)}" "${KEYCHAIN_PATH}"`
+    await execFileAsync(
+      'security', ['add-generic-password', '-a', userId, '-s', tokenKey, '-l', tokenKey, '-U', '-w', oauthToken, KEYCHAIN_PATH]
     );
 
     // Store oauth token secret
-    await execAsync(
-      `security add-generic-password -a "${userId}" -s "${secretKey}" -l "${secretKey}" -U -w "${escapeForShell(oauthTokenSecret)}" "${KEYCHAIN_PATH}"`
+    await execFileAsync(
+      'security', ['add-generic-password', '-a', userId, '-s', secretKey, '-l', secretKey, '-U', '-w', oauthTokenSecret, KEYCHAIN_PATH]
     );
 
     return true;
   } catch (error) {
-    console.error('Failed to save tokens to keychain:', error.stderr?.trim() || error.message);
+    logger.error('Failed to save tokens to keychain:', { error: error.stderr?.trim() || error.message });
     return false;
   }
 }
@@ -104,24 +98,20 @@ export async function deleteTokens(userId) {
     const secretKey = `${SERVICE_NAME}:oauth_secret:${userId}`;
 
     try {
-      await execAsync(
-        `security delete-generic-password -s "${tokenKey}" "${KEYCHAIN_PATH}"`
-      );
+      await execFileAsync('security', ['delete-generic-password', '-s', tokenKey, KEYCHAIN_PATH]);
     } catch {
       // Ignore if not found
     }
 
     try {
-      await execAsync(
-        `security delete-generic-password -s "${secretKey}" "${KEYCHAIN_PATH}"`
-      );
+      await execFileAsync('security', ['delete-generic-password', '-s', secretKey, KEYCHAIN_PATH]);
     } catch {
       // Ignore if not found
     }
 
     return true;
   } catch (error) {
-    console.error('Failed to delete tokens from keychain:', error.stderr?.trim() || error.message);
+    logger.error('Failed to delete tokens from keychain:', { error: error.stderr?.trim() || error.message });
     return false;
   }
 }

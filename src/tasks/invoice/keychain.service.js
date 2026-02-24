@@ -1,10 +1,11 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import logger from '../../utils/logger.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const SERVICE_NAME = 'TPG';
 const KEYCHAIN_NAME = 'TPGBot.keychain-db';
 const KEYCHAIN_PATH = path.join(os.homedir(), 'Library', 'Keychains', KEYCHAIN_NAME);
@@ -16,9 +17,9 @@ const KEYCHAIN_PATH = path.join(os.homedir(), 'Library', 'Keychains', KEYCHAIN_N
  */
 async function ensureKeychain() {
   if (!fs.existsSync(KEYCHAIN_PATH)) {
-    await execAsync(`security create-keychain -p "" "${KEYCHAIN_NAME}"`);
+    await execFileAsync('security', ['create-keychain', '-p', '', KEYCHAIN_NAME]);
   }
-  await execAsync(`security unlock-keychain -p "" "${KEYCHAIN_PATH}"`);
+  await execFileAsync('security', ['unlock-keychain', '-p', '', KEYCHAIN_PATH]);
 }
 
 /**
@@ -31,15 +32,15 @@ async function ensureKeychain() {
 export async function getStoredPassword(account) {
   try {
     await ensureKeychain();
-    const { stdout } = await execAsync(
-      `security find-generic-password -s "${SERVICE_NAME}" -a "${account}" -w "${KEYCHAIN_PATH}"`
+    const { stdout } = await execFileAsync(
+      'security', ['find-generic-password', '-s', SERVICE_NAME, '-a', account, '-w', KEYCHAIN_PATH]
     );
     return stdout.trim();
   } catch {
     // Fallback: search default keychains by label
     try {
-      const { stdout } = await execAsync(
-        `security find-generic-password -l "${SERVICE_NAME}" -w`
+      const { stdout } = await execFileAsync(
+        'security', ['find-generic-password', '-l', SERVICE_NAME, '-w']
       );
       return stdout.trim();
     } catch {
@@ -59,12 +60,12 @@ export async function getStoredPassword(account) {
 export async function storePassword(account, password) {
   try {
     await ensureKeychain();
-    await execAsync(
-      `security add-generic-password -a "${account}" -s "${SERVICE_NAME}" -l "${SERVICE_NAME}" -U -w "${password}" "${KEYCHAIN_PATH}"`
+    await execFileAsync(
+      'security', ['add-generic-password', '-a', account, '-s', SERVICE_NAME, '-l', SERVICE_NAME, '-U', '-w', password, KEYCHAIN_PATH]
     );
     return true;
   } catch (error) {
-    console.error('Failed to save to keychain:', error.stderr?.trim() || 'Unknown error');
+    logger.error('Failed to save to keychain:', { error: error.stderr?.trim() || error.message });
     return false;
   }
 }

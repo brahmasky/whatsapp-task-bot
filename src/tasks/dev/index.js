@@ -100,7 +100,7 @@ function runPlanningPhase(instruction, worktreePath, feedback = null, onProgress
     let timedOut = false;
 
     const progressTimer = onProgress
-      ? setInterval(() => { onProgress().catch(() => {}); }, 60_000)
+      ? setInterval(() => { onProgress().catch(err => logger.warn(`/dev: progress ping failed: ${err.message}`)); }, 60_000)
       : null;
 
     const cleanup = () => { if (progressTimer) clearInterval(progressTimer); };
@@ -159,7 +159,7 @@ function runImplementationPhase(instruction, plan, worktreePath, onProgress) {
 
     const progressTimer = setInterval(() => {
       if (filesRead + filesWritten > 0) {
-        onProgress({ filesRead, filesWritten, lastAction }).catch(() => {});
+        onProgress({ filesRead, filesWritten, lastAction }).catch(err => logger.warn(`/dev: progress ping failed: ${err.message}`));
       }
     }, 60_000);
 
