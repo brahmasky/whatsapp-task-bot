@@ -180,6 +180,7 @@ No test or lint scripts are configured.
 - Fetching news? → `tasks/portfolio/news.service.js`
 - Re-authenticating mid-task (token expired)? → `shared/reauth.js`
 - Sending a reply that might be too long for WhatsApp? → `utils/message.js`
+- Persisting data to disk (history, cache, config)? → `utils/persistence.service.js`
 
 ## Adding a New Task
 
@@ -201,6 +202,21 @@ No test or lint scripts are configured.
 - Gmail SMTP integration via nodemailer
 - `isEmailConfigured()` - check if email env vars are set
 - `sendEmailWithAttachment({ to, subject, text, attachmentPath, attachmentFilename })` - send email with file
+
+**Persistence Service (`src/utils/persistence.service.js`):**
+- Simple key-value file storage under `data/`; keys map to filenames (`'trade-history'` → `data/trade-history.json`)
+- Keys can include subdirectories: `'research-cache/AAPL'` → `data/research-cache/AAPL.json`
+- `load(key)` — read and parse `data/<key>.json`; returns null if missing or corrupt
+- `save(key, data)` — atomic write (tmp + rename) to `data/<key>.json`
+- `append(key, record)` — append one JSON line to `data/<key>.jsonl` (for logs, history)
+- `loadLines(key)` — read all lines from `data/<key>.jsonl`; returns array of objects
+
+**Logger (`src/utils/logger.js`):**
+- Console output unchanged (ANSI colors, human-readable)
+- `info`/`warn`/`error` are also written to `data/logs/bot-YYYY-MM-DD.jsonl` (one JSON entry per line); `debug` skipped to keep files lean
+- In-memory ring buffer: last 100 entries kept for `/status health`
+- `logger.getRecent(n)` — last n entries from buffer
+- `logger.getStats()` — count by level (`{ info, warn, error, debug }`) since startup
 
 ## MCP Server (E*TRADE)
 
