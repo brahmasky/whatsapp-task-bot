@@ -4,23 +4,36 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 
 ## Features
 
+**Platform & Core**
 - **WhatsApp Integration** - Uses Baileys for WhatsApp Web connection
-- **Task System** - Modular, extensible task architecture
-- **Browser Automation** - Playwright for web scraping and form interaction
-- **Email Delivery** - Optional Gmail SMTP integration for sending files via email
-- **Secure Credentials** - macOS Keychain for credential storage; all keychain operations use `execFile` (argument arrays, no shell interpolation)
-- **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration
-- **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
-- **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP fallback
-- **GFD Bracket Trading** - Place BUY LIMIT or MARKET orders (Good for Day) with optional auto TP/SL on fill via E*TRADE
-- **Simple Sell Orders** - Place GFD LIMIT or MARKET sell orders; `sell all` fetches your current position size automatically
-- **Persistent Fill Monitor** - Pending orders survive bot restarts via `data/pending-fills.json`
+- **Modular Task System** - Extensible plugin architecture; each command is an isolated task module
 - **State Persistence** - Active task states survive crash/restart via `data/user-states.json`
-- **Multi-stock Compare** - Research up to 5 stocks in parallel with a ranked score table
-- **Market Ideas** - Auto-research the top sector leaders of the day
+
+**System & Invoice**
+- **System Monitoring** - macOS CPU, memory, disk, and temperature stats via `/system`
+- **Browser Automation** - Playwright-driven TPG invoice download with OTP confirmation
+- **Email Delivery** - Optional Gmail SMTP integration; invoices sent via WhatsApp and email
+- **Secure Credentials** - macOS Keychain for TPG and E*TRADE tokens; all Keychain ops use `execFile` (no shell interpolation)
+
+**Portfolio & Market Analysis**
+- **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration; cached for fast P&L in market updates
+- **Market Updates** - Scheduled sector rotation analysis (pre/post market, weekly) with adaptive AI tiers ($0–$0.03)
+- **Market Ideas** - Auto-research the top 2 positive sector ETFs of the day
+
+**Stock Research**
+- **AI Stock Scoring** - Sonnet agent scores stocks 0–100 across valuation, quality, momentum, and sentiment
+- **Multi-stock Compare** - Research up to 5 stocks in parallel with a ranked score table, cache-aware
+- **24h Research Cache** - Results cached per symbol; instant replay at zero cost within TTL
+
+**Trading**
+- **GFD Buy Orders** - Place BUY LIMIT (golden ratio entry) or MARKET orders, all Good for Day
+- **Optional TP/SL** - Auto-place take profit and stop loss on fill; each leg independently optional
+- **Persistent Fill Monitor** - Pending orders survive bot restarts; polls every 60s, notifies on fill or expiry
+- **Sell Orders** - Place GFD LIMIT or MARKET sell orders; `sell all` auto-fetches position size from E*TRADE
 - **Trade Journal** - Export full trade history as a CSV file directly to WhatsApp
-- **Bot Development** - Delegate codebase questions and code changes to Claude Code CLI (zero API cost)
-- **System Monitoring** - macOS CPU, memory, disk, and temperature stats
+
+**Bot Development**
+- **Claude Code Integration** - Delegate codebase questions and code changes to Claude Code CLI (zero API cost, uses Claude Pro subscription)
 
 ## Setup
 
