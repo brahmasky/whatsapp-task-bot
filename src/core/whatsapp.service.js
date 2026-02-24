@@ -18,11 +18,24 @@ console.log = (...args) => { if (!shouldSuppress(args)) origLog.apply(console, a
 console.debug = (...args) => { if (!shouldSuppress(args)) origDebug.apply(console, args); };
 console.info = (...args) => { if (!shouldSuppress(args)) origInfo.apply(console, args); };
 
+// Disconnect reasons that will not recover without user intervention
+const FATAL_DISCONNECT_REASONS = new Set([
+  DisconnectReason.loggedOut,        // 401 — session revoked on phone
+  DisconnectReason.badSession,       // 500 — stale/corrupt auth files
+  DisconnectReason.forbidden,        // 403 — account banned or blocked
+  DisconnectReason.connectionReplaced, // 440 — another client took over
+  DisconnectReason.multideviceMismatch, // 411 — device key mismatch
+]);
+
+const MAX_RETRIES = 10;
+const BASE_BACKOFF_MS = 3000;
+
 class WhatsAppService {
   constructor() {
     this.socket = null;
     this.isReady = false;
     this.messageHandler = null;
+    this._retryCount = 0;
   }
 
   /**
@@ -74,26 +87,41 @@ class WhatsAppService {
       }
 
       if (connection === 'close') {
-        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-        logger.warn('Connection closed:', {
-          reason: lastDisconnect?.error?.message,
-          reconnecting: shouldReconnect
-        });
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const reasonName = DisconnectReason[statusCode] ?? 'unknown';
 
-        if (shouldReconnect) {
-          logger.info('Reconnecting in 3s...');
-          setTimeout(() => {
-            this.initialize().catch(err => {
-              logger.error('Reconnection failed:', { error: err.message, stack: err.stack });
-            });
-          }, 3000);
-        } else {
-          logger.error('Logged out. Please delete .baileys_auth folder and restart.');
+        if (FATAL_DISCONNECT_REASONS.has(statusCode)) {
+          logger.error(`WhatsApp disconnected (${reasonName}). Manual intervention required.`);
+          if (statusCode === DisconnectReason.badSession) {
+            logger.error('Session is stale or corrupt. Delete .baileys_auth/ and restart to re-scan QR code.');
+          } else if (statusCode === DisconnectReason.loggedOut) {
+            logger.error('Logged out. Delete .baileys_auth/ and restart to re-scan QR code.');
+          } else if (statusCode === DisconnectReason.connectionReplaced) {
+            logger.error('Session replaced by another client. Restart to reclaim the connection.');
+          } else {
+            logger.error('Delete .baileys_auth/ and restart if the issue persists.');
+          }
+          return;
         }
+
+        this._retryCount += 1;
+        if (this._retryCount > MAX_RETRIES) {
+          logger.error(`WhatsApp reconnection failed after ${MAX_RETRIES} attempts (last reason: ${reasonName}). Giving up. Restart the bot to try again.`);
+          return;
+        }
+
+        const delayMs = BASE_BACKOFF_MS * Math.min(this._retryCount, 8); // cap at 24s
+        logger.warn(`Connection closed (${reasonName}). Reconnecting in ${delayMs / 1000}s... (attempt ${this._retryCount}/${MAX_RETRIES})`);
+        setTimeout(() => {
+          this.initialize().catch(err => {
+            logger.error('Reconnection failed:', { error: err.message, stack: err.stack });
+          });
+        }, delayMs);
       }
 
       if (connection === 'open') {
         this.isReady = true;
+        this._retryCount = 0;
         logger.success('WhatsApp Task Bot is ready!');
         logger.info('Waiting for messages...');
       }
