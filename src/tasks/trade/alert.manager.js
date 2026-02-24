@@ -40,6 +40,21 @@ function _key(symbol, userId, buyOrderId) {
 let monitorJob = null;
 let sendFn = null;
 
+// ─── Pre-expiry warning ────────────────────────────────────────────────────────
+
+/**
+ * Returns true if current time in US/Eastern is between 3:30 PM and 3:59 PM
+ * on a weekday — the 30-minute window before GFD orders expire at market close.
+ */
+function _isPreExpiryWindow() {
+  const etStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const et = new Date(etStr);
+  const day = et.getDay(); // 0=Sun, 6=Sat
+  const hour = et.getHours();
+  const minute = et.getMinutes();
+  return day >= 1 && day <= 5 && hour === 15 && minute >= 30;
+}
+
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
 function _saveFills() {
@@ -80,6 +95,7 @@ export function addPendingFill({ symbol, userId, buyOrderId, accountIdKey, qty, 
     stopLoss,
     limitPrice: limitPrice ?? null,
     placedAt: Date.now(),
+    preExpiryWarned: false,
   });
   _saveFills();
   logger.info(`Monitoring fill for BUY ${symbol} #${buyOrderId} (${qty} shares ≤ $${limitPrice})`);
@@ -208,7 +224,21 @@ async function _checkFills() {
           await sendFn({ type: 'text', userId: fill.userId, text: msg });
         }
       }
-      // OPEN / PARTIAL — keep monitoring
+      // OPEN / PARTIAL — keep monitoring; warn user if close to market close
+      if (status === 'OPEN' && !fill.preExpiryWarned && _isPreExpiryWindow()) {
+        fill.preExpiryWarned = true;
+        pendingFills.set(key, fill);
+        _saveFills();
+        if (sendFn) {
+          await sendFn({
+            type: 'text',
+            userId: fill.userId,
+            text:
+              `⏰ GFD BUY order for *${fill.symbol}* #${fill.buyOrderId} expires at 4 PM ET today.\n` +
+              `If it doesn't fill in the next 30 min, run /trade ${fill.symbol} again tomorrow.`,
+          });
+        }
+      }
     } catch (err) {
       logger.warn(`Fill check error for ${fill.symbol} #${fill.buyOrderId}: ${err.message}`);
     }

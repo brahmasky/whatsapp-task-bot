@@ -6,11 +6,13 @@
  */
 
 import logger from '../../utils/logger.js';
+import { replyLong } from '../../utils/message.js';
 import { fetchFundamentals } from './fundamentals.service.js';
 import { runResearchAgent } from './agent.service.js';
 import { addPendingFill } from '../trade/alert.manager.js';
 import { placeBuyOrder, calcQty, checkCashBalance, refreshPortfolioCache } from '../../shared/etrade.order.js';
-import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
+import { cleanupAuthFlow } from '../../shared/auth.service.js';
+import { startReAuth, handleReAuthPin } from '../../shared/reauth.js';
 import config from '../../config/index.js';
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
@@ -220,7 +222,7 @@ const researchTask = {
       scoreText = '\n_Analysis unavailable — Claude API key required for scoring._';
     }
 
-    await ctx.reply(`${header}${fundamentalsText}${scoreText}`);
+    await replyLong(ctx.reply.bind(ctx), `${header}${fundamentalsText}${scoreText}`);
 
     // Option C: keep task alive so user can set an alert inline on BUY/STRONG BUY
     if (analysis?.entryPlan && ['BUY', 'STRONG BUY'].includes(analysis.recommendation)) {
@@ -242,27 +244,10 @@ const researchTask = {
 
     // ── PIN handler (re-auth flow) ────────────────────────────────────────────
     if (taskState === 'awaiting_pin') {
-      const pin = text.trim();
-      if (!pin || pin.length < 4 || pin.length > 20) {
-        await ctx.reply('Invalid PIN format. Please enter the verification code from E*TRADE.');
-        return;
-      }
-      try {
-        await ctx.reply('Verifying PIN...');
-        await exchangePin(ctx.userId, pin);
-        logger.info('Research task: re-authentication successful');
+      await handleReAuthPin(ctx, text, async () => {
         await ctx.reply('✅ Re-authenticated! Placing order now...');
         await _placeResearchOrder(ctx, ctx.getTaskData());
-      } catch (err) {
-        if (err.status === 401) {
-          await ctx.reply('Invalid or expired PIN. Please get a fresh PIN from the authorization page and try again.');
-        } else {
-          cleanupAuthFlow(ctx.userId);
-          logger.error(`Research re-auth PIN exchange failed: ${err.message}`);
-          await ctx.reply(`Re-authentication failed: ${err.message}`);
-          ctx.completeTask();
-        }
-      }
+      });
       return;
     }
 
@@ -335,7 +320,7 @@ const researchTask = {
       }
     } catch (err) {
       if (err.status === 401) {
-        await _startReAuth(ctx);
+        await startReAuth(ctx, REAUTH_NOTE);
         return;
       }
       logger.warn(`Cash balance check failed for ${symbol}: ${err.message} — proceeding`);
@@ -352,25 +337,7 @@ const researchTask = {
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-async function _startReAuth(ctx) {
-  try {
-    const { authUrl } = await startAuthFlow(ctx.userId);
-    ctx.updateTask('awaiting_pin'); // plan data preserved via state merge
-    const envNote = config.etrade?.sandbox ? ' (SANDBOX)' : '';
-    await ctx.reply(
-      `🔐 E*TRADE session expired. Re-authentication required${envNote}.\n\n` +
-      `1. Open this link to authorize:\n${authUrl}\n\n` +
-      `2. Log in to E*TRADE and click "Accept"\n` +
-      `3. Copy the PIN and reply with it here\n\n` +
-      `Your trade plan is saved — order will be placed after re-auth.\n` +
-      `Type /cancel to abort.`
-    );
-  } catch (authErr) {
-    logger.error(`Research: failed to start re-auth: ${authErr.message}`);
-    await ctx.reply(`Failed to start re-authentication: ${authErr.message}`);
-    ctx.completeTask();
-  }
-}
+const REAUTH_NOTE = 'Your trade plan is saved — order will be placed after re-auth.';
 
 async function _placeResearchOrder(ctx, plan) {
   const { symbol, entryLow, entryHigh, takeProfit, stopLoss, limitPrice, qty, budget } = plan;

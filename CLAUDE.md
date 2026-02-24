@@ -167,6 +167,8 @@ No test or lint scripts are configured.
 | E*TRADE auth | `shared/etrade.helper.js` | Get authenticated service — `getAuthenticatedService()`, loads tokens from keychain |
 | E*TRADE orders | `shared/etrade.order.js` | All order ops — `placeBuyOrder()`, `cancelBuyOrder()`, `placeExitOrders()`, `getOrderStatus()`, `checkCashBalance()`, `refreshPortfolioCache()`, `calcQty()`, `getFirstBrokerageAccount()` |
 | OAuth flow | `shared/auth.service.js` | PIN-based OAuth for E*TRADE — `startAuthFlow(userId)`, `exchangePin(userId, pin)`, `cleanupAuthFlow(userId)` |
+| Mid-task re-auth | `shared/reauth.js` | Inline re-auth when token expires during /trade or /research — `startReAuth(ctx, note)`, `handleReAuthPin(ctx, pin, onSuccess)` |
+| Message splitting | `utils/message.js` | Split long text for WhatsApp — `splitMessage(text, maxLength)`, `replyLong(replyFn, text)` |
 | News fetching | `tasks/portfolio/news.service.js` | Google News RSS — `fetchMarketNews([symbols], maxSymbols)` |
 
 **New task checklist — before writing any fetch or loop code:**

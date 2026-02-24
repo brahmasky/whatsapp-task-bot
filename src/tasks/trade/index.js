@@ -20,7 +20,8 @@
  *   buy <low> <high> tp <target> sl <stop> qty <shares>
  */
 
-import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
+import { cleanupAuthFlow } from '../../shared/auth.service.js';
+import { startReAuth, handleReAuthPin } from '../../shared/reauth.js';
 import logger from '../../utils/logger.js';
 import { fetchStockQuote } from '../market/sector.service.js';
 import { placeBuyOrder, calcQty, checkCashBalance, cancelBuyOrder, getOrderStatus, getAuthenticatedService, getFirstBrokerageAccount } from '../../shared/etrade.order.js';
@@ -88,58 +89,7 @@ async function placeAndTrack(ctx, { symbol, limitPrice, qty, takeProfit, stopLos
 
 // ─── Re-auth flow ─────────────────────────────────────────────────────────────
 
-async function startReAuth(ctx) {
-  const { authUrl } = await startAuthFlow(ctx.userId);
-  ctx.updateTask('awaiting_pin'); // plan data preserved via state merge
-
-  const envNote = config.etrade.sandbox ? ' (SANDBOX)' : '';
-  await ctx.reply(
-    `🔐 E*TRADE session expired. Re-authentication required${envNote}.\n\n` +
-    `1. Open this link to authorize:\n${authUrl}\n\n` +
-    `2. Log in to E*TRADE and click "Accept"\n` +
-    `3. Copy the PIN and reply with it here\n\n` +
-    `Your trade plan is saved — order will be placed after re-auth.\n` +
-    `Type /cancel to abort.`
-  );
-}
-
-async function handlePin(ctx, pin) {
-  if (!pin || pin.trim().length < 4 || pin.trim().length > 20) {
-    await ctx.reply(
-      'Invalid PIN format. Please enter the verification code from E*TRADE\n' +
-      '(shown after clicking "Accept" on the authorization page).'
-    );
-    return;
-  }
-
-  try {
-    await ctx.reply('Verifying PIN...');
-    await exchangePin(ctx.userId, pin.trim());
-    logger.info('Trade task: re-authentication successful');
-
-    await ctx.reply('✅ Re-authenticated! Placing order now...');
-
-    const data = ctx.getTaskData();
-    try {
-      await placeAndTrack(ctx, data);
-    } catch (placeErr) {
-      logger.error(`Order placement failed after re-auth: ${placeErr.message}`);
-      await ctx.reply(`❌ Order placement failed: ${placeErr.message}`);
-      ctx.completeTask();
-    }
-  } catch (err) {
-    if (err.status === 401) {
-      await ctx.reply(
-        'Invalid or expired PIN. Please get a fresh PIN from the authorization page and try again.'
-      );
-    } else {
-      cleanupAuthFlow(ctx.userId);
-      logger.error(`Trade re-auth PIN exchange failed: ${err.message}`);
-      await ctx.reply(`Re-authentication failed: ${err.message}`);
-      ctx.completeTask();
-    }
-  }
-}
+const REAUTH_NOTE = 'Your trade plan is saved — order will be placed after re-auth.';
 
 // ─── Plan handler — validates, checks cash, places order ─────────────────────
 
@@ -211,13 +161,7 @@ async function handleParams(ctx, text, data) {
     logger.error(`Failed to place trade order for ${symbol}: ${err.message}`, { stack: err.stack });
 
     if (err.status === 401) {
-      try {
-        await startReAuth(ctx);
-      } catch (reAuthErr) {
-        logger.error(`Failed to start re-auth: ${reAuthErr.message}`);
-        await ctx.reply(`Failed to start re-authentication: ${reAuthErr.message}`);
-        ctx.completeTask();
-      }
+      await startReAuth(ctx, REAUTH_NOTE);
     } else {
       await ctx.reply(`❌ Failed to place order: ${err.message}\n\nTry again or type /cancel.`);
       ctx.completeTask();
@@ -438,7 +382,17 @@ const tradeTask = {
     }
 
     if (taskState === 'awaiting_pin') {
-      await handlePin(ctx, text);
+      await handleReAuthPin(ctx, text, async () => {
+        await ctx.reply('✅ Re-authenticated! Placing order now...');
+        const data = ctx.getTaskData();
+        try {
+          await placeAndTrack(ctx, data);
+        } catch (placeErr) {
+          logger.error(`Order placement failed after re-auth: ${placeErr.message}`);
+          await ctx.reply(`❌ Order placement failed: ${placeErr.message}`);
+          ctx.completeTask();
+        }
+      });
       return;
     }
 

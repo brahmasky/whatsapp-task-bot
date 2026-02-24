@@ -6,6 +6,7 @@ import { getETradeClient } from '../../mcp/client.js';
 import { savePortfolioCache } from '../market/cache.service.js';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
+import { replyLong } from '../../utils/message.js';
 
 /**
  * E*TRADE Portfolio Advisor Task
@@ -231,14 +232,7 @@ export default {
           `${p.symbol}: ${p.quantity} shares, ${p.portfolioWeight} of portfolio, ${p.gainLossPct >= 0 ? '+' : ''}${p.gainLossPct.toFixed(1)}%`
         ).join('\n');
 
-        if (positionsText.length > 4000) {
-          const chunks = this.splitMessage(positionsText, 3800);
-          for (const chunk of chunks) {
-            await ctx.reply(chunk);
-          }
-        } else {
-          await ctx.reply(`Positions:\n${positionsText}`);
-        }
+        await replyLong(ctx.reply.bind(ctx), `Positions:\n${positionsText}`);
       } else {
         // Production mode - use AI agent with MCP tools
         await ctx.reply(`🤖 Starting AI advisor agent [${envLabel}]...\n\nThe agent will analyze your portfolio using MCP servers.`);
@@ -259,15 +253,7 @@ export default {
         }
 
         // Send the analysis (may need to split if too long)
-        if (analysis.length > 4000) {
-          const chunks = this.splitMessage(analysis, 3800);
-          for (let i = 0; i < chunks.length; i++) {
-            const prefix = chunks.length > 1 ? `[${i + 1}/${chunks.length}] ` : '';
-            await ctx.reply(prefix + chunks[i]);
-          }
-        } else {
-          await ctx.reply(analysis);
-        }
+        await replyLong(ctx.reply.bind(ctx), analysis);
 
         // Show token usage and tool calls
         const totalTokens = usage.inputTokens + usage.outputTokens;
@@ -305,35 +291,6 @@ export default {
     }
 
     ctx.completeTask();
-  },
-
-  /**
-   * Split long message into chunks
-   */
-  splitMessage(text, maxLength) {
-    const chunks = [];
-    let remaining = text;
-
-    while (remaining.length > 0) {
-      if (remaining.length <= maxLength) {
-        chunks.push(remaining);
-        break;
-      }
-
-      // Find a good break point (newline or space)
-      let breakPoint = remaining.lastIndexOf('\n', maxLength);
-      if (breakPoint < maxLength * 0.5) {
-        breakPoint = remaining.lastIndexOf(' ', maxLength);
-      }
-      if (breakPoint < maxLength * 0.5) {
-        breakPoint = maxLength;
-      }
-
-      chunks.push(remaining.substring(0, breakPoint));
-      remaining = remaining.substring(breakPoint).trimStart();
-    }
-
-    return chunks;
   },
 
   /**
