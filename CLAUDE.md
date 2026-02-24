@@ -278,6 +278,8 @@ The `/market` command provides sector rotation analysis with portfolio context.
 - `/market post` - Force post-market style update
 - `/market weekly` - Force weekly summary
 - `/market deep` - Force deep analysis with research tools
+- `/market ideas` - Auto-research top 2 positive-performing sector ETFs (ranked score table via compare service)
+- `/market scorecard` (or `/market card`) - Multi-day sector performance scorecard
 
 **Portfolio Caching:**
 Portfolio data is cached locally when `/portfolio` runs. Market updates use this cache + live Yahoo prices to show real-time P&L without calling E*TRADE API.
