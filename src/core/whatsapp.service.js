@@ -6,7 +6,7 @@ import path from 'path';
 import logger from '../utils/logger.js';
 
 // Suppress noisy Baileys internal logs (signal protocol session details)
-const noisyPatterns = ['SessionEntry', 'Closing session', '_chains', 'ephemeralKeyPair', 'chainKey', 'currentRatchet'];
+const noisyPatterns = ['SessionEntry', 'Closing session', '_chains', 'ephemeralKeyPair', 'chainKey', 'currentRatchet', 'link-preview-js'];
 function shouldSuppress(args) {
   const str = args.map(a => typeof a === 'object' ? inspect(a, { depth: 2 }) : String(a)).join(' ');
   return noisyPatterns.some(p => str.includes(p));
