@@ -116,7 +116,8 @@ class WhatsAppService {
 
         const attempt = this._retryCount + 1;
         const delayMs = BASE_BACKOFF_MS * Math.min(attempt, 8); // cap at 24s
-        logger.warn(`Connection closed (${reasonName}). Reconnecting in ${delayMs / 1000}s... (attempt ${attempt}/${MAX_RETRIES})`);
+        const errMsg = lastDisconnect?.error?.message ?? '';
+        logger.warn(`Connection closed (${reasonName}${errMsg ? ': ' + errMsg : ''}). Reconnecting in ${delayMs / 1000}s... (attempt ${attempt}/${MAX_RETRIES})`);
         setTimeout(() => {
           if (myGeneration !== this._generation) return; // another reconnect already in flight
           this._retryCount += 1;
