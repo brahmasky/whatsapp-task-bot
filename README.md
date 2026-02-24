@@ -8,7 +8,7 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 - **Task System** - Modular, extensible task architecture
 - **Browser Automation** - Playwright for web scraping and form interaction
 - **Email Delivery** - Optional Gmail SMTP integration for sending files via email
-- **Secure Credentials** - macOS Keychain integration for password storage
+- **Secure Credentials** - macOS Keychain for credential storage; all keychain operations use `execFile` (argument arrays, no shell interpolation)
 - **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration
 - **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
 - **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP fallback
@@ -67,6 +67,7 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
     │          src/shared/                │◄───────────────────────────────┘
     │  yahoo.service  │  agent.service    │
     │  etrade.helper  │  auth.service     │
+    │  etrade.order   │                   │
     └────────┬────────────────┬───────────┘
              │                │
              ▼                ▼
