@@ -36,12 +36,14 @@ class WhatsAppService {
     this.isReady = false;
     this.messageHandler = null;
     this._retryCount = 0;
+    this._generation = 0; // incremented on each initialize(); handlers ignore stale generations
   }
 
   /**
    * Initialize WhatsApp connection using Baileys
    */
   async initialize() {
+    const myGeneration = ++this._generation;
     logger.info('Initializing WhatsApp client (Baileys)...');
 
     // Setup authentication state
@@ -74,19 +76,22 @@ class WhatsAppService {
     // Handle credential updates
     this.socket.ev.on('creds.update', saveCreds);
 
-    // Handle connection updates
+    // Handle connection updates — ignore events from superseded sockets
     this.socket.ev.on('connection.update', (update) => {
+      if (myGeneration !== this._generation) return;
+
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        console.log('\n'); // Add spacing
+        console.log('\n');
         qrcode.generate(qr, { small: true });
-        console.log('\n'); // Add spacing
+        console.log('\n');
         logger.info('Scan the QR code above with WhatsApp on your phone');
         logger.info('Go to WhatsApp > Settings > Linked Devices > Link a Device');
       }
 
       if (connection === 'close') {
+        this.isReady = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const reasonName = DisconnectReason[statusCode] ?? 'unknown';
 
@@ -104,15 +109,17 @@ class WhatsAppService {
           return;
         }
 
-        this._retryCount += 1;
-        if (this._retryCount > MAX_RETRIES) {
+        if (this._retryCount >= MAX_RETRIES) {
           logger.error(`WhatsApp reconnection failed after ${MAX_RETRIES} attempts (last reason: ${reasonName}). Giving up. Restart the bot to try again.`);
           return;
         }
 
-        const delayMs = BASE_BACKOFF_MS * Math.min(this._retryCount, 8); // cap at 24s
-        logger.warn(`Connection closed (${reasonName}). Reconnecting in ${delayMs / 1000}s... (attempt ${this._retryCount}/${MAX_RETRIES})`);
+        const attempt = this._retryCount + 1;
+        const delayMs = BASE_BACKOFF_MS * Math.min(attempt, 8); // cap at 24s
+        logger.warn(`Connection closed (${reasonName}). Reconnecting in ${delayMs / 1000}s... (attempt ${attempt}/${MAX_RETRIES})`);
         setTimeout(() => {
+          if (myGeneration !== this._generation) return; // another reconnect already in flight
+          this._retryCount += 1;
           this.initialize().catch(err => {
             logger.error('Reconnection failed:', { error: err.message, stack: err.stack });
           });
