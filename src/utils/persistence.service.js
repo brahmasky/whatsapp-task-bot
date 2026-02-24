@@ -83,6 +83,25 @@ export function append(key, record) {
 }
 
 /**
+ * List all keys stored under a subdirectory prefix.
+ * Returns basenames (without .json extension) of all JSON files found.
+ * @param {string} prefix - subdirectory name, e.g. 'research-cache'
+ * @returns {string[]}
+ */
+export function listKeys(prefix) {
+  const dir = path.join(DATA_DIR, prefix);
+  try {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter(f => f.endsWith('.json'))
+      .map(f => f.slice(0, -5));
+  } catch (err) {
+    logger.warn(`persistence.listKeys(${prefix}): ${err.message}`);
+    return [];
+  }
+}
+
+/**
  * Read all records from a .jsonl file, in order (oldest first).
  * Returns an empty array if the file doesn't exist or any line fails to parse.
  */

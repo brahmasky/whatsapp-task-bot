@@ -2,6 +2,9 @@ import logger from '../utils/logger.js';
 import stateManager from './state.manager.js';
 import taskRegistry from './task.registry.js';
 import config from '../config/index.js';
+import { getPendingFillsCount } from '../tasks/trade/alert.manager.js';
+
+const COMMAND_ALIASES = { '/r': '/research', '/t': '/trade', '/m': '/market', '/p': '/portfolio', '/s': '/sell' };
 
 /**
  * Routes incoming messages to appropriate handlers.
@@ -120,7 +123,8 @@ class MessageRouter {
    */
   async handleCommand(userId, message, text) {
     const parts = text.split(/\s+/);
-    const command = parts[0].toLowerCase();
+    const rawCommand = parts[0].toLowerCase();
+    const command = COMMAND_ALIASES[rawCommand] ?? rawCommand;
     const args = parts.slice(1);
 
     // Global commands
@@ -138,7 +142,7 @@ class MessageRouter {
         return;
 
       case '/status':
-        await this.showStatus(userId, message);
+        await this.showStatus(userId, message, args);
         return;
     }
 
@@ -292,9 +296,34 @@ To start a task, type its command (e.g., /invoice)`;
   }
 
   /**
-   * Show current task status
+   * Show current task status (or bot health with /status health)
    */
-  async showStatus(userId, message) {
+  async showStatus(userId, message, args = []) {
+    // /status health — bot diagnostics
+    if (args[0]?.toLowerCase() === 'health') {
+      const uptime = process.uptime();
+      const h = Math.floor(uptime / 3600);
+      const m = Math.floor((uptime % 3600) / 60);
+      const s = Math.floor(uptime % 60);
+      const mem = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      const stats = logger.getStats();
+      const lastErr = logger.getRecent(100).reverse().find(e => e.level === 'error');
+      const lastErrStr = lastErr
+        ? `${Math.floor((Date.now() - new Date(lastErr.ts)) / 60000)}m ago — "${lastErr.message.slice(0, 60)}"`
+        : 'none';
+
+      await this.reply(
+        message,
+        `Bot Health\n` +
+        `• Uptime: ${h}h ${m}m ${s}s\n` +
+        `• Memory: ${mem} MB RSS\n` +
+        `• Pending fills: ${getPendingFillsCount()}\n` +
+        `• Log buffer: ${stats.info} info, ${stats.warn} warn, ${stats.error} error\n` +
+        `• Last error: ${lastErrStr}`
+      );
+      return;
+    }
+
     const state = stateManager.getState(userId);
 
     if (!state) {

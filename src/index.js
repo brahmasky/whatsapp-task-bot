@@ -16,6 +16,7 @@ import { stopScheduler } from './tasks/market/scheduler.js';
 import researchTask from './tasks/research/index.js';
 import tradeTask, { initAlertMonitor, stopAlertMonitor } from './tasks/trade/index.js';
 import devTask from './tasks/dev/index.js';
+import sellTask from './tasks/sell/index.js';
 
 /**
  * WhatsApp Task Bot
@@ -35,6 +36,7 @@ async function main() {
   taskRegistry.register(researchTask);
   taskRegistry.register(tradeTask);
   taskRegistry.register(devTask);
+  taskRegistry.register(sellTask);
   logger.info(`Registered ${taskRegistry.listTasks().length} task(s)`);
 
   // Create WhatsApp channel and register with gateway
@@ -57,12 +59,9 @@ async function main() {
   const cleanupIntervalMs = 5 * 60 * 1000;
   const maxTaskAgeMs = config.timeouts.smsMinutes * 60 * 1000 * 2; // 2x SMS timeout
 
-  setInterval(() => {
-    const cleaned = stateManager.cleanupStaleTasks(maxTaskAgeMs);
-    for (const { userId, taskName } of cleaned) {
-      logger.warn(`Cleaned up stale task '${taskName}' for user ${userId}`);
-    }
-  }, cleanupIntervalMs);
+  // Restore task states from disk (crash/restart recovery)
+  const restored = stateManager.restoreState(maxTaskAgeMs);
+  if (restored > 0) logger.info(`Restored ${restored} task state(s) from disk`);
 
   // Initialize gateway (which initializes all channels)
   await gateway.initialize();
@@ -73,13 +72,40 @@ async function main() {
     ? `whatsapp:${config.bot.allowedUsers[0]}@s.whatsapp.net`
     : null;
 
+  let sendFn = null;
   if (schedulerUserId) {
-    const sendFn = gateway.createSender('whatsapp');
+    sendFn = gateway.createSender('whatsapp');
     initScheduler(sendFn, schedulerUserId);
     initAlertMonitor(sendFn);
   } else {
     logger.warn('No allowed users configured - market scheduler and trade alerts disabled');
   }
+
+  setInterval(() => {
+    // Warn tasks approaching timeout (2 min before expiry)
+    if (sendFn) {
+      const WARN_BEFORE_MS = 2 * 60 * 1000;
+      for (const { userId, startedAt } of stateManager.getAllActiveTasks()) {
+        const remaining = maxTaskAgeMs - (Date.now() - startedAt);
+        if (remaining > 0 && remaining < WARN_BEFORE_MS) {
+          const st = stateManager.getState(userId);
+          if (st && !st.data?._timeoutWarned) {
+            stateManager.updateTask(userId, st.taskState, { _timeoutWarned: true });
+            sendFn({
+              type: 'text',
+              userId,
+              text: `Your active task (${st.activeTask}) will auto-cancel in ~${Math.ceil(remaining / 60000)} min due to inactivity.`,
+            });
+          }
+        }
+      }
+    }
+    // Cleanup stale tasks
+    const cleaned = stateManager.cleanupStaleTasks(maxTaskAgeMs);
+    for (const { userId, taskName } of cleaned) {
+      logger.warn(`Cleaned up stale task '${taskName}' for user ${userId}`);
+    }
+  }, cleanupIntervalMs);
 
   // Graceful shutdown
   const shutdown = async (signal) => {

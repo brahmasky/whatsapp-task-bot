@@ -154,7 +154,9 @@ No test or lint scripts are configured.
 - `ctx.sendDocument(path, filename, mimetype, caption)` - send file
 - `ctx.getState()` / `ctx.getTaskData()` / `ctx.updateTask(state, data)` / `ctx.completeTask()`
 
-**Global Commands:** `/help`, `/tasks`, `/cancel`, `/status`
+**Global Commands:** `/help`, `/tasks`, `/cancel`, `/status`, `/status health`
+
+**Command Aliases:** `/r` → `/research`, `/t` → `/trade`, `/m` → `/market`, `/p` → `/portfolio`, `/s` → `/sell`
 
 ## Shared Services (`src/shared/`)
 
@@ -165,7 +167,8 @@ No test or lint scripts are configured.
 | Yahoo Finance quotes | `shared/yahoo.service.js` | Any price fetch — `fetchQuote(symbol)`, 60s cache, never throws |
 | Claude agent loop | `shared/agent.service.js` | Any agentic tool-use loop — `runAgentLoop({model, system, messages, tools, maxIterations, maxTokens, executeTool, onToolCall?, onTurnText?})` |
 | E*TRADE auth | `shared/etrade.helper.js` | Get authenticated service — `getAuthenticatedService()`, loads tokens from keychain |
-| E*TRADE orders | `shared/etrade.order.js` | All order ops — `placeBuyOrder()`, `cancelBuyOrder()`, `placeExitOrders()`, `getOrderStatus()`, `checkCashBalance()`, `refreshPortfolioCache()`, `calcQty()`, `getFirstBrokerageAccount()` |
+| E*TRADE orders | `shared/etrade.order.js` | All order ops — `placeBuyOrder()`, `placeSellOrder()`, `cancelBuyOrder()`, `cancelOrder()`, `placeExitOrders()`, `getOrderStatus()`, `getPositionQty()`, `checkCashBalance()`, `refreshPortfolioCache()`, `calcQty()`, `getFirstBrokerageAccount()` |
+| Multi-stock compare | `shared/compare.service.js` | Parallel research + ranked table — `compareSymbols(symbols)`, `formatCompareTable(results)` |
 | OAuth flow | `shared/auth.service.js` | PIN-based OAuth for E*TRADE — `startAuthFlow(userId)`, `exchangePin(userId, pin)`, `cleanupAuthFlow(userId)` |
 | Mid-task re-auth | `shared/reauth.js` | Inline re-auth when token expires during /trade or /research — `startReAuth(ctx, note)`, `handleReAuthPin(ctx, pin, onSuccess)` |
 | Message splitting | `utils/message.js` | Split long text for WhatsApp — `splitMessage(text, maxLength)`, `replyLong(replyFn, text)` |
@@ -191,7 +194,7 @@ No test or lint scripts are configured.
 ## Key Constraints
 
 - **Single active task per user** - state machine tracks one task at a time
-- **In-memory state** - lost on restart, no database (exception: trade fill monitor persists to `data/pending-fills.json`)
+- **State persistence** - task states survive crash/restart via `data/user-states.json`; trade fill monitor persists to `data/pending-fills.json`
 - **macOS-specific** - Keychain service only works on macOS
 - **First run requires QR scan** - session stored in `.baileys_auth/`
 - **Authorization** - only self-messages or users in `ALLOWED_USERS` env var
@@ -313,6 +316,8 @@ The `/research TICKER` command fetches fundamentals and runs a Sonnet agent loop
 **Entry plan (BUY / STRONG BUY only):**
 Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss`, `rrRatio`, `notes` based on 7-day OHLCV support levels. After the report, task stays alive in `awaiting_trade` state. User replies `trade 1000` (budget) or `trade qty 14` (fixed shares) to place a GFD BUY LIMIT at the golden ratio of the entry zone (`entryLow + (entryHigh - entryLow) * 0.618`) immediately — same order + fill-monitor path as `/trade`. Re-auth handled inline if token expired.
 
+**Research caching:** Results are cached to `data/research-cache/<SYMBOL>.json` for 24h. Second call within TTL serves from cache (instant, $0 cost). Use `/research AAPL refresh` to force a fresh fetch. Use `/research list` to see all cached symbols with scores and age.
+
 **Key files:**
 - `src/tasks/research/fundamentals.service.js` - Yahoo (yahoo-finance2) + FMP data fetching, OHLCV
 - `src/tasks/research/agent.service.js` - Sonnet agent loop with scratchpad and entry plan prompt
@@ -320,21 +325,32 @@ Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss
 
 **Requires:** `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional (fallback for sparse data). Est. cost: ~$0.05/call.
 
-## Bracket Trading (/trade)
+## Buying (/trade)
 
-The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitors for fill to auto-place TP + SL.
+The `/trade TICKER` command places a GFD BUY order immediately. TP and SL are optional — omit them for a simple buy with no auto-exits.
+
+**Plan syntax** (send after `/trade TICKER`):
+```
+buy <low> <high> [tp <target>] [sl <stop>] budget <amount>
+buy <low> <high> [tp <target>] [sl <stop>] qty <shares>
+buy market [tp <target>] [sl <stop>] budget <amount>
+buy market [tp <target>] [sl <stop>] qty <shares>
+```
 
 **Flow:**
 1. `/trade UBER` — fetch current price for reference, prompt for plan
-2. Enter: `buy 70 73 tp 81.30 sl 68 budget 1000`
-3. Bot checks live cash balance (`getAccountBalances` — real-time API call), then places **BUY LIMIT at golden ratio of zone** (`buyLow + (buyHigh - buyLow) * 0.618`), **Good for Day**
-4. E*TRADE handles execution — no price polling loop in the bot
-5. Fill monitor (`alert.manager.js`) polls every 60s — on EXECUTED, automatically places TP (LIMIT SELL) + SL (STOP SELL) using `GOOD_UNTIL_CANCEL`
-6. On GFD EXPIRED, user is notified to re-run the next day
+2. Enter: `buy 70 73 tp 81.30 sl 68 budget 1000` (or simpler: `buy 70 73 budget 1000`)
+3. Bot shows order review (R/R if both tp+sl set, estimated cost) and asks for `confirm` or `edit`
+4. On confirm: bot checks live cash balance, places **BUY LIMIT at golden ratio of zone** (`buyLow + (buyHigh - buyLow) * 0.618`) or MARKET order — all **Good for Day**
+5. E*TRADE handles execution — no price polling loop in the bot
+6. Fill monitor (`alert.manager.js`) polls every 60s — on EXECUTED, auto-places any configured TP (LIMIT SELL, GFD) + SL (STOP SELL, GFD)
+7. On GFD EXPIRED, user is notified with a ready-to-paste re-entry command for tomorrow
 
-**Order type:** BUY LIMIT at golden ratio (61.8%) of the buy zone. Better average cost than the zone ceiling — fills at the limit price or better.
+**Order type:** BUY LIMIT at golden ratio (61.8%) of the buy zone, or MARKET. All orders are **Good for Day** — never linger as GTC.
 
-**Order sequencing:** BUY placed first. TP and SL placed only after BUY is EXECUTED — avoids accidental short sell.
+**TP and SL are independently optional.** If both omitted, fill notification sent with no auto-exits. If only one provided, that leg is placed and user manages the other manually.
+
+**Order sequencing:** BUY placed first. TP/SL placed only after BUY is EXECUTED — avoids accidental short sell.
 
 **Cash check:** `checkCashBalance()` fetches live `cashAvailableForInvestment` from E*TRADE before placing. Blocks if insufficient. Non-blocking on API failure (E*TRADE will also reject).
 
@@ -346,17 +362,46 @@ The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitor
 
 **Token expiry:** Both `/trade` and `/research` inline trade handle re-auth inline (`awaiting_pin` state). Plan data is preserved in task state so the order is placed automatically after PIN exchange.
 
+**Failed exit recovery:** If TP/SL placement fails after fill, the plan is saved to `data/pending-exits/<SYMBOL>-<userId>.json`. Use `/trade retry-exits TICKER` to re-attempt.
+
+**Trade history:** Every successful fill is appended to `data/trade-history.jsonl`. View with `/trade history` (last 10 entries). Export full CSV with `/trade journal`.
+
 **Commands:**
-- `/trade TICKER` — set a new trade plan
+- `/trade TICKER` — set a new trade plan (shows review before placing)
 - `/trade list` — show tracked orders with live E*TRADE status
 - `/trade cancel TICKER` — cancel the pending BUY order on E*TRADE
+- `/trade modify TICKER [tp X] [sl Y]` — cancel and replace TP/SL orders for a completed trade
+- `/trade history` — show last 10 completed trades
+- `/trade journal` — export full trade history as a CSV file
+- `/trade retry-exits TICKER` — retry failed TP/SL placement
 - `/trade track TICKER ORDER_ID qty N tp X sl Y [limit P]` — re-register an existing order after bot restart (recovery only)
 - `/trade fill TICKER` — simulate a fill (sandbox only)
 
 **Key files:**
 - `src/tasks/trade/index.js` - task definition, param parsing, re-auth flow
-- `src/shared/etrade.order.js` - all E*TRADE order ops: `placeBuyOrder()`, `cancelBuyOrder()`, `placeExitOrders()`, `checkCashBalance()`, `getOrderStatus()`, `refreshPortfolioCache()`
+- `src/shared/etrade.order.js` - all E*TRADE order ops: `placeBuyOrder()`, `placeSellOrder()`, `cancelBuyOrder()`, `cancelOrder()`, `placeExitOrders()`, `checkCashBalance()`, `getOrderStatus()`, `getPositionQty()`, `refreshPortfolioCache()`
 - `src/tasks/trade/alert.manager.js` - fill monitor (60s cron, disk persistence, `_checkFills`, `_placeFillExits`)
+
+## Selling (/sell)
+
+The `/sell TICKER` command places a single GFD SELL order for an existing position. No TP/SL — one-shot exit.
+
+**Plan syntax** (send after `/sell TICKER`):
+```
+sell <qty> <price>     ← limit sell, GFD
+sell <qty> market      ← market sell
+sell all <price>       ← sell full position (fetches qty from E*TRADE), limit GFD
+sell all market        ← sell full position at market
+```
+
+**Flow:**
+1. `/sell UBER` — prompt for sell plan
+2. Enter plan (e.g. `sell 50 85.00` or `sell all market`)
+3. Review shown → reply `confirm` to place, `edit` to revise
+4. `sell all`: calls `getPositionQty(symbol)` to fetch current position from E*TRADE; errors if not found
+5. Re-auth handled inline if token expired
+
+**Key file:** `src/tasks/sell/index.js`
 
 ## Bot Development (/dev)
 

@@ -9,10 +9,12 @@ import logger from '../../utils/logger.js';
 import { replyLong } from '../../utils/message.js';
 import { fetchFundamentals } from './fundamentals.service.js';
 import { runResearchAgent } from './agent.service.js';
+import { compareSymbols, formatCompareTable } from '../../shared/compare.service.js';
 import { addPendingFill } from '../trade/alert.manager.js';
 import { placeBuyOrder, calcQty, checkCashBalance, refreshPortfolioCache } from '../../shared/etrade.order.js';
 import { cleanupAuthFlow } from '../../shared/auth.service.js';
 import { startReAuth, handleReAuthPin } from '../../shared/reauth.js';
+import { load, save, listKeys } from '../../utils/persistence.service.js';
 import config from '../../config/index.js';
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
@@ -173,6 +175,14 @@ function formatScore(analysis) {
   return lines.join('\n');
 }
 
+function formatCachedReport(cached) {
+  let text = `🔍 *${cached.symbol}* (cached)\n\n` + formatScore(cached);
+  if (cached.entryPlan) {
+    text += formatEntryPlan(cached.entryPlan, null);
+  }
+  return text;
+}
+
 // ─── Task definition ──────────────────────────────────────────────────────────
 
 const researchTask = {
@@ -180,11 +190,73 @@ const researchTask = {
   description: 'Score a stock 0-100 with AI analysis. Usage: /research AAPL',
 
   async start(ctx, args) {
-    const symbol = args?.[0]?.toUpperCase() || '';
+    const rawSymbol = args?.[0]?.toUpperCase() || '';
 
-    if (!symbol) {
-      await ctx.reply('Usage: /research TICKER\nExample: /research AAPL');
+    if (!rawSymbol) {
+      await ctx.reply('Usage: /research TICKER\nExample: /research AAPL\n\nOther:\n  /research list — show cached reports\n  /research compare AAPL GOOGL — compare multiple stocks\n  /research AAPL refresh — force fresh fetch');
       ctx.completeTask();
+      return;
+    }
+
+    // /research compare AAPL GOOGL MSFT
+    if (rawSymbol === 'COMPARE') {
+      const symbols = args.slice(1).map(s => s.toUpperCase()).filter(Boolean);
+      if (symbols.length < 2) {
+        await ctx.reply('Usage: /research compare AAPL GOOGL [MSFT AMZN NVDA]\nCompares up to 5 stocks.');
+        ctx.completeTask();
+        return;
+      }
+      await ctx.reply(`Comparing ${symbols.join(', ')}... (may take ~${symbols.length * 8}s)`);
+      const results = await compareSymbols(symbols);
+      const table = formatCompareTable(results);
+      await ctx.reply(`Comparison (${symbols.length} stocks):\n\n${table}\n\n[c]=cached [f]=fresh`);
+      ctx.completeTask();
+      return;
+    }
+
+    // /research list
+    if (rawSymbol === 'LIST') {
+      const keys = listKeys('research-cache');
+      if (keys.length === 0) {
+        await ctx.reply('No cached research.');
+        ctx.completeTask();
+        return;
+      }
+      const rows = keys.map(k => {
+        const c = load('research-cache/' + k);
+        if (!c) return null;
+        const age = Math.floor((Date.now() - c.cachedAt) / 3600000);
+        const ageStr = age < 24 ? `${age}h` : `${Math.floor(age / 24)}d`;
+        const rec = (c.recommendation ?? 'N/A').padEnd(11);
+        return `${k.padEnd(6)} ${String(c.score ?? '?').padStart(3)}/100  ${rec} ${ageStr}`;
+      }).filter(Boolean);
+      await ctx.reply(`Research Cache (${rows.length}):\n\n${rows.join('\n')}`);
+      ctx.completeTask();
+      return;
+    }
+
+    const symbol = rawSymbol;
+    const forceRefresh = args.slice(1).some(a => a.toLowerCase() === 'refresh');
+
+    // Check cache
+    const CACHE_TTL = 24 * 60 * 60 * 1000;
+    const cached = !forceRefresh && load('research-cache/' + symbol);
+    if (cached && (Date.now() - cached.cachedAt) < CACHE_TTL) {
+      const ageH = Math.floor((Date.now() - cached.cachedAt) / 3600000);
+      await replyLong(ctx.reply.bind(ctx), `[cached ${ageH}h ago]\n\n` + formatCachedReport(cached));
+
+      if (cached.entryPlan && ['BUY', 'STRONG BUY'].includes(cached.recommendation)) {
+        ctx.updateTask('awaiting_trade', { symbol, entryPlan: cached.entryPlan });
+        const { entryLow: _l, entryHigh: _h } = cached.entryPlan;
+        const _goldenPrice = parseFloat((_l + (_h - _l) * 0.618).toFixed(2));
+        await ctx.reply(
+          `💡 Reply \`trade <budget>\` to place a GFD BUY LIMIT at $${_goldenPrice.toFixed(2)} (zone $${_l.toFixed(2)}–$${_h.toFixed(2)}, e.g. \`trade 1000\`)\n` +
+          `or \`trade qty <shares>\` for a fixed quantity.\n` +
+          `Type \`skip\` to dismiss. Use \`/research ${symbol} refresh\` for fresh data.`
+        );
+      } else {
+        ctx.completeTask();
+      }
       return;
     }
 
@@ -218,13 +290,27 @@ const researchTask = {
         scoreText += formatEntryPlan(analysis.entryPlan, fundamentals.price);
       }
       logger.info(`${symbol} scored ${analysis.score}/100 (${analysis.recommendation}) via ${analysis.toolCalls} tool calls${analysis.entryPlan ? ' [entry plan included]' : ''}`);
+
+      // Save to cache
+      save('research-cache/' + symbol, {
+        symbol,
+        score: analysis.score,
+        valuation: analysis.valuation,
+        quality: analysis.quality,
+        momentum: analysis.momentum,
+        sentiment: analysis.sentiment,
+        recommendation: analysis.recommendation,
+        summary: analysis.summary,
+        entryPlan: analysis.entryPlan ?? null,
+        cachedAt: Date.now(),
+      });
     } else {
       scoreText = '\n_Analysis unavailable — Claude API key required for scoring._';
     }
 
     await replyLong(ctx.reply.bind(ctx), `${header}${fundamentalsText}${scoreText}`);
 
-    // Option C: keep task alive so user can set an alert inline on BUY/STRONG BUY
+    // Keep task alive so user can set an alert inline on BUY/STRONG BUY
     if (analysis?.entryPlan && ['BUY', 'STRONG BUY'].includes(analysis.recommendation)) {
       ctx.updateTask('awaiting_trade', { symbol, entryPlan: analysis.entryPlan });
       const { entryLow: _l, entryHigh: _h } = analysis.entryPlan;
@@ -353,7 +439,7 @@ async function _placeResearchOrder(ctx, plan) {
     const statusStr = v?.found ? ` ✓ ${v.status}` : buyOrderId ? ' ⚠️ unverified' : '';
     const sizeDesc = budget != null ? `$${budget.toFixed(2)} budget` : `${qty} shares`;
 
-    addPendingFill({ symbol, userId: ctx.userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice });
+    addPendingFill({ symbol, userId: ctx.userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice, buyLow: entryLow, buyHigh: entryHigh, budget });
     refreshPortfolioCache().catch(err => logger.warn(`Post-BUY cache refresh failed: ${err.message}`));
 
     await ctx.reply(
@@ -367,7 +453,7 @@ async function _placeResearchOrder(ctx, plan) {
     ctx.completeTask();
   } catch (err) {
     if (err.status === 401) {
-      await _startReAuth(ctx);
+      await startReAuth(ctx, REAUTH_NOTE);
     } else {
       logger.error(`Research inline trade failed for ${symbol}: ${err.message}`);
       await ctx.reply(`❌ Order placement failed: ${err.message}`);

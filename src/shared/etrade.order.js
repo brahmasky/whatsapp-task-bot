@@ -144,17 +144,19 @@ export async function getOrderStatus(accountIdKey, orderId) {
 // ─── Order placement ──────────────────────────────────────────────────────────
 
 /**
- * Stage 1: Place a BUY LIMIT order.
+ * Stage 1: Place a BUY order (LIMIT or MARKET).
+ * @param {number|null} entryPrice - null → MARKET order; number → LIMIT order
  * @param {string} orderTerm - 'GOOD_FOR_DAY' (default) or 'GOOD_UNTIL_CANCEL'
  * Returns accountIdKey + buyOrderId for fill monitoring.
  */
-export async function placeBuyOrder(symbol, qty, entryPrice, orderTerm = 'GOOD_FOR_DAY') {
+export async function placeBuyOrder(symbol, qty, entryPrice = null, orderTerm = 'GOOD_FOR_DAY') {
   const service = await getAuthenticatedService();
   const accountIdKey = await getFirstBrokerageAccount(service);
 
-  logger.info(`Placing BUY LIMIT order: ${qty} ${symbol} @ ≤$${entryPrice} (${orderTerm})`);
+  const priceType = entryPrice === null ? 'MARKET' : 'LIMIT';
+  logger.info(`Placing BUY ${priceType} order: ${qty} ${symbol}${entryPrice != null ? ` @ ≤$${entryPrice}` : ''} (${orderTerm})`);
 
-  const detail = buildOrderDetail('LIMIT', entryPrice, buildInstrument(symbol, qty, 'BUY'), orderTerm);
+  const detail = buildOrderDetail(priceType, entryPrice, buildInstrument(symbol, qty, 'BUY'), orderTerm);
   const buyOrderId = await previewThenPlace(service, accountIdKey, detail);
 
   logger.info(`BUY order placed: ${symbol} #${buyOrderId}`);
@@ -175,23 +177,87 @@ export async function cancelBuyOrder(accountIdKey, orderId) {
 }
 
 /**
- * Stage 2: Place TP (limit SELL) + SL (stop SELL) after BUY is filled.
+ * Cancel any order by ID (generic; works for BUY, SELL, TP, SL).
+ */
+export async function cancelOrder(accountIdKey, orderId) {
+  const service = await getAuthenticatedService();
+  await service.cancelOrder(accountIdKey, orderId);
+  logger.info(`Order #${orderId} cancelled`);
+}
+
+/**
+ * Place a SELL order (LIMIT GTC or MARKET).
+ * @param {string} symbol
+ * @param {number} qty - Number of shares to sell
+ * @param {number|null} limitPrice - null → MARKET; number → LIMIT at GTC
+ * @param {string} orderTerm - defaults to 'GOOD_UNTIL_CANCEL'
+ * @returns {Promise<{ orderId: number, accountIdKey: string }>}
+ */
+export async function placeSellOrder(symbol, qty, limitPrice = null, orderTerm = 'GOOD_FOR_DAY') {
+  const service = await getAuthenticatedService();
+  const accountIdKey = await getFirstBrokerageAccount(service);
+
+  const priceType = limitPrice === null ? 'MARKET' : 'LIMIT';
+  logger.info(`Placing SELL ${priceType} order: ${qty} ${symbol}${limitPrice != null ? ` @ $${limitPrice}` : ''} (${orderTerm})`);
+
+  const detail = buildOrderDetail(priceType, limitPrice, buildInstrument(symbol, qty, 'SELL'), orderTerm);
+  const orderId = await previewThenPlace(service, accountIdKey, detail);
+
+  logger.info(`SELL order placed: ${symbol} #${orderId}`);
+  return { orderId, accountIdKey };
+}
+
+/**
+ * Get the quantity of an open position by symbol.
+ * Returns null if the position is not found.
+ * @param {string} symbol
+ * @returns {Promise<{ qty: number|null, accountIdKey: string }>}
+ */
+export async function getPositionQty(symbol) {
+  const service = await getAuthenticatedService();
+  const accountIdKey = await getFirstBrokerageAccount(service);
+  const portfolios = await service.getPositions(accountIdKey);
+  for (const portfolio of portfolios) {
+    for (const pos of (portfolio.Position ?? [])) {
+      if (pos.Product?.symbol?.toUpperCase() === symbol.toUpperCase()) {
+        return { qty: parseFloat(pos.quantity), accountIdKey };
+      }
+    }
+  }
+  return { qty: null, accountIdKey };
+}
+
+/**
+ * Stage 2: Place TP (limit SELL) and/or SL (stop SELL) after BUY is filled.
+ * Either or both may be null — null means that leg is skipped.
  * Reuses the accountIdKey returned from placeBuyOrder.
  */
 export async function placeExitOrders(accountIdKey, symbol, qty, takeProfit, stopLoss) {
   const service = await getAuthenticatedService();
 
-  logger.info(`Placing exit orders: ${qty} ${symbol} | TP $${takeProfit} | SL $${stopLoss}`);
+  logger.info(`Placing exit orders: ${qty} ${symbol} | TP ${takeProfit != null ? '$' + takeProfit : 'none'} | SL ${stopLoss != null ? '$' + stopLoss : 'none'}`);
 
-  const tpDetail = buildOrderDetail('LIMIT', takeProfit, buildInstrument(symbol, qty, 'SELL'));
-  const tpOrderId = await previewThenPlace(service, accountIdKey, tpDetail);
-  logger.info(`TP SELL order placed: ${symbol} #${tpOrderId}`);
+  let tpOrderId = null;
+  let slOrderId = null;
+  const orderIds = [];
 
-  const slDetail = buildOrderDetail('STOP', stopLoss, buildInstrument(symbol, qty, 'SELL'));
-  const slOrderId = await previewThenPlace(service, accountIdKey, slDetail);
-  logger.info(`SL STOP order placed: ${symbol} #${slOrderId}`);
+  if (takeProfit != null) {
+    const tpDetail = buildOrderDetail('LIMIT', takeProfit, buildInstrument(symbol, qty, 'SELL'));
+    tpOrderId = await previewThenPlace(service, accountIdKey, tpDetail);
+    logger.info(`TP SELL order placed: ${symbol} #${tpOrderId}`);
+    if (tpOrderId) orderIds.push(tpOrderId);
+  }
 
-  const verification = await _verifyOrders(service, accountIdKey, [tpOrderId, slOrderId].filter(Boolean));
+  if (stopLoss != null) {
+    const slDetail = buildOrderDetail('STOP', stopLoss, buildInstrument(symbol, qty, 'SELL'));
+    slOrderId = await previewThenPlace(service, accountIdKey, slDetail);
+    logger.info(`SL STOP order placed: ${symbol} #${slOrderId}`);
+    if (slOrderId) orderIds.push(slOrderId);
+  }
+
+  const verification = orderIds.length > 0
+    ? await _verifyOrders(service, accountIdKey, orderIds)
+    : {};
 
   return { tpOrderId, slOrderId, verification };
 }

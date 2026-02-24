@@ -1,4 +1,7 @@
 import logger from '../utils/logger.js';
+import { load, save } from '../utils/persistence.service.js';
+
+const PERSIST_KEY = 'user-states';
 
 /**
  * Manages per-user state for active tasks.
@@ -40,6 +43,41 @@ class StateManager {
   }
 
   /**
+   * Persist current state snapshot to disk (crash recovery).
+   * @private
+   */
+  _persist() {
+    const snapshot = {};
+    for (const [userId, state] of this.userStates.entries()) {
+      snapshot[userId] = state;
+    }
+    save(PERSIST_KEY, snapshot);
+  }
+
+  /**
+   * Restore task states from the last disk snapshot.
+   * Skips entries older than maxAgeMs. Demotes placing_order → awaiting_confirmation
+   * since we can't know if the order was placed before the crash.
+   * @param {number} maxAgeMs
+   * @returns {number} Number of states restored
+   */
+  restoreState(maxAgeMs) {
+    const snapshot = load(PERSIST_KEY);
+    if (!snapshot) return 0;
+    let count = 0;
+    const now = Date.now();
+    for (const [userId, state] of Object.entries(snapshot)) {
+      if ((now - state.startedAt) > maxAgeMs) continue;
+      if (state.taskState === 'placing_order') {
+        state.taskState = 'awaiting_confirmation';
+      }
+      this.userStates.set(userId, state);
+      count++;
+    }
+    return count;
+  }
+
+  /**
    * Start a new task for a user
    * @param {string} userId - The user's JID
    * @param {string} taskName - The task command (e.g., '/invoice')
@@ -52,6 +90,7 @@ class StateManager {
       data: initialData,
       startedAt: Date.now(),
     });
+    this._persist();
   }
 
   /**
@@ -72,6 +111,7 @@ class StateManager {
       taskState: newState,
       data: { ...current.data, ...newData },
     });
+    this._persist();
   }
 
   /**
@@ -90,6 +130,7 @@ class StateManager {
    */
   clearTask(userId) {
     this.userStates.delete(userId);
+    this._persist();
   }
 
   /**

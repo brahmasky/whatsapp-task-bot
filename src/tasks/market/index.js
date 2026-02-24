@@ -12,7 +12,7 @@
  * - /market deep - Force deep analysis with research tools
  */
 
-import { fetchAllMarketData, analyzeSectorRotation, fetchSectorHistory } from './sector.service.js';
+import { fetchAllMarketData, analyzeSectorRotation, fetchSectorHistory, fetchSectorData } from './sector.service.js';
 import { getLivePortfolioValuation, compareToMarket, getSectorAlignment } from './valuation.service.js';
 import { analyzeMarket } from './analyzer.service.js';
 import { isMarketDay, getMarketStatus } from './calendar.js';
@@ -148,6 +148,34 @@ export default {
         } catch (err) {
           logger.error('Scorecard failed:', err.message);
           await ctx.reply(`Error fetching scorecard: ${err.message}`);
+        }
+        ctx.completeTask();
+        return;
+
+      } else if (arg === 'ideas') {
+        await ctx.reply('Fetching sector leaders and running research...');
+        try {
+          const { compareSymbols, formatCompareTable } = await import('../../shared/compare.service.js');
+          const sectors = await fetchSectorData();
+          const leaders = Object.values(sectors)
+            .filter(s => s.changePercent > 0)
+            .sort((a, b) => b.changePercent - a.changePercent)
+            .slice(0, 2)
+            .map(s => s.symbol);
+
+          if (leaders.length === 0) {
+            await ctx.reply('No positive sector leaders today.');
+            ctx.completeTask();
+            return;
+          }
+
+          await ctx.reply(`Top sectors today: ${leaders.join(', ')}. Running research...`);
+          const results = await compareSymbols(leaders);
+          const table = formatCompareTable(results);
+          await ctx.reply(`Top sector ideas:\n\n${table}\n\n[c]=cached [f]=fresh`);
+        } catch (err) {
+          logger.error('Market ideas failed:', err.message);
+          await ctx.reply(`Failed to fetch ideas: ${err.message}`);
         }
         ctx.completeTask();
         return;

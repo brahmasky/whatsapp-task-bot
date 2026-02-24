@@ -12,8 +12,13 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 - **Portfolio Analysis** - Claude-powered agent with E*TRADE MCP integration
 - **Market Updates** - Scheduled sector rotation analysis with adaptive AI tiers
 - **Stock Research** - AI-scored stock analysis (0-100) with fundamentals from Yahoo + FMP fallback
-- **GFD Bracket Trading** - Place BUY LIMIT orders instantly (Good for Day) with automatic TP + SL on fill via E*TRADE
+- **GFD Bracket Trading** - Place BUY LIMIT or MARKET orders (Good for Day) with optional auto TP/SL on fill via E*TRADE
+- **Simple Sell Orders** - Place GFD LIMIT or MARKET sell orders; `sell all` fetches your current position size automatically
 - **Persistent Fill Monitor** - Pending orders survive bot restarts via `data/pending-fills.json`
+- **State Persistence** - Active task states survive crash/restart via `data/user-states.json`
+- **Multi-stock Compare** - Research up to 5 stocks in parallel with a ranked score table
+- **Market Ideas** - Auto-research the top sector leaders of the day
+- **Trade Journal** - Export full trade history as a CSV file directly to WhatsApp
 - **Bot Development** - Delegate codebase questions and code changes to Claude Code CLI (zero API cost)
 - **System Monitoring** - macOS CPU, memory, disk, and temperature stats
 
@@ -102,11 +107,20 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
 | `/market deep` | Force deep analysis with research tools |
 | `/market status` | Scheduler info and next update times |
 | `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals, recommendation, and entry plan |
-| `/trade TICKER` | Place a GFD BUY LIMIT order with auto TP + SL on fill via E*TRADE |
+| `/research compare A B C` | Compare up to 5 stocks in parallel — ranked score table, cache-aware |
+| `/research list` | Show all cached research reports with scores and age |
+| `/trade TICKER` | Place a GFD BUY LIMIT or MARKET order; TP and SL are optional |
 | `/trade list` | Show pending orders with live E*TRADE status |
 | `/trade cancel TICKER` | Cancel the pending BUY order on E*TRADE |
+| `/trade modify TICKER [tp X] [sl Y]` | Cancel and replace TP/SL orders for a completed trade |
+| `/trade journal` | Export full trade history as a CSV file |
+| `/trade history` | Show last 10 completed trades |
+| `/trade retry-exits TICKER` | Retry failed TP/SL placement after a fill |
 | `/trade track TICKER ORDER_ID ...` | Re-register an existing order after bot restart (recovery) |
 | `/trade fill TICKER` | Simulate a fill for sandbox testing |
+| `/sell TICKER` | Place a GFD SELL order for an existing position |
+| `/market ideas` | Auto-research top positive-performing sector leaders |
+| `/market scorecard` | Multi-day sector performance scorecard |
 | `/dev <question or instruction>` | Ask Claude Code a question about the codebase, or delegate a code change |
 
 ### Research Scoring
@@ -125,30 +139,61 @@ Requires `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional but recommended. Est. cost:
 
 **Entry plan (BUY / STRONG BUY only):** The agent produces an entry zone, take profit, stop loss, and R/R ratio based on 7-day OHLCV support levels. After receiving the report, reply `trade 1000` (budget) or `trade qty 14` (shares) to place the order inline — no need to switch to `/trade`. The limit price is set at the golden ratio (61.8%) of the entry zone for a better average cost than the ceiling.
 
-### Bracket Trading (/trade)
+### Buying (/trade)
 
-The `/trade` command places a GFD BUY LIMIT order immediately and automatically places TP + SL once the buy is confirmed executed by E*TRADE.
+The `/trade` command places a GFD BUY order immediately. TP and SL are optional — omit them for a simple buy with no auto-exits.
+
+**Plan syntax** (send after `/trade TICKER`):
+```
+buy <low> <high> [tp <target>] [sl <stop>] budget <amount>
+buy <low> <high> [tp <target>] [sl <stop>] qty <shares>
+buy market [tp <target>] [sl <stop>] budget <amount>
+buy market [tp <target>] [sl <stop>] qty <shares>
+```
+
+**Examples:**
+```
+buy 70 73 tp 81.30 sl 68 budget 1000   ← full bracket (auto TP+SL on fill)
+buy 70 73 budget 1000                   ← buy only, manage exit manually
+buy market budget 1000                  ← market order, no exits
+buy market tp 85 sl 68 qty 10          ← market with exits
+```
 
 **Flow:**
-1. `/trade UBER` — fetch current price for reference, prompt for plan
-2. Enter plan: `buy 70 73 tp 81.30 sl 68 budget 1000`
-3. Bot checks live cash balance, then places a **BUY LIMIT at the golden ratio of the zone** (`$70 + ($73-$70) × 0.618 = $71.85`), **Good for Day**
-4. E*TRADE handles execution — no price monitoring loop
-5. Fill monitor polls every 60s — when BUY executes, bot automatically places TP + SL
+1. `/trade UBER` — fetch current price, show prompt
+2. Enter plan
+3. Review shown (price, TP/SL if set, est. cost, R/R if applicable) → reply `confirm`
+4. Bot checks live cash balance, places **BUY LIMIT at golden ratio of zone** (61.8%) or MARKET order — all **Good for Day**
+5. Fill monitor polls every 60s — on EXECUTED, auto-places any configured TP/SL exits
 
-**Order type:** BUY LIMIT at the golden ratio (61.8%) of the buy zone, GFD. Better average cost than buying at the zone ceiling — fills at the limit price or better. Expires at market close if not filled — run `/trade` again the next day.
+**Key behaviours:**
+- All orders are **Good for Day** — expire at market close, never linger as GTC
+- TP and SL are independently optional. If omitted, fill notification is sent with no auto-exits
+- BUY is placed first; TP/SL only placed after EXECUTED — no accidental short sell
+- Cash check before every order; blocked if insufficient
+- GFD expiry warning sent at 3:30 PM ET if order is still open
+- Pending orders persist to `data/pending-fills.json` — survives restarts
+- Re-auth handled inline if token expired mid-flow
 
-**Order sequencing:** BUY is placed first. TP and SL are only placed after the BUY is confirmed EXECUTED — avoids accidental short sell.
+### Selling (/sell)
 
-**Cash check:** Live E*TRADE cash balance is verified before placing any order. Order is blocked if insufficient funds.
+The `/sell` command places a single GFD SELL order for an existing position.
 
-**Token expiry:** E*TRADE OAuth tokens expire at midnight ET. Both `/trade` and `/research` inline trade handle re-authentication inline (via `src/shared/reauth.js`) without needing to switch to `/portfolio`.
+**Plan syntax** (send after `/sell TICKER`):
+```
+sell <qty> <price>     ← limit sell, GFD
+sell <qty> market      ← market sell
+sell all <price>       ← sell full position (fetches qty from E*TRADE), limit GFD
+sell all market        ← sell full position at market
+```
 
-**GFD expiry warning:** If a GFD order is still open at 3:30 PM ET, the fill monitor sends a one-time warning giving you 30 minutes to decide whether to let it expire or cancel and re-run tomorrow.
+**Examples:**
+```
+sell 50 85.00
+sell all market
+```
 
-**Fill monitor persistence:** Pending orders are saved to `data/pending-fills.json` on every change. On restart, the monitor restores from disk and immediately checks status — a bot restart never loses track of an open order. Use `/trade list` anytime to see live E*TRADE status.
-
-**Sandbox testing:** Use `/trade fill TICKER` to simulate a fill and trigger exit order placement (sandbox only — blocked in production).
+No TP/SL — this is a one-shot exit order. Re-auth handled inline if token expired.
 
 ### Bot Development (/dev)
 

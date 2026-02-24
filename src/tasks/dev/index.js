@@ -97,6 +97,7 @@ function runPlanningPhase(instruction, worktreePath, feedback = null, onProgress
     );
 
     let rawOutput = '';
+    let stderrBuf = '';
     let timedOut = false;
 
     const progressTimer = onProgress
@@ -107,15 +108,22 @@ function runPlanningPhase(instruction, worktreePath, feedback = null, onProgress
 
     proc.stdout.on('data', chunk => { rawOutput += chunk.toString(); });
     proc.stderr.on('data', chunk => {
-      logger.info(`/dev plan: ${chunk.toString().trimEnd().slice(0, 200)}`);
+      const s = chunk.toString();
+      stderrBuf += s;
+      logger.debug(`/dev plan stderr: ${s.trimEnd().slice(0, 200)}`);
     });
-    proc.on('error', err => { cleanup(); reject(err); });
+    proc.on('error', err => {
+      cleanup();
+      const detail = stderrBuf ? `\nStderr: ${stderrBuf.slice(-500)}` : '';
+      reject(new Error(err.message + detail));
+    });
     proc.on('close', code => {
       cleanup();
       if (timedOut) return;
       logger.info(`/dev: Claude Code (planning) exited with code ${code}`);
       if (code !== 0 && code !== null) {
-        reject(new Error(`Claude Code (planning) exited with code ${code}`));
+        const detail = stderrBuf ? `\nStderr: ${stderrBuf.slice(-500)}` : '';
+        reject(new Error(`Claude Code (planning) exited with code ${code}${detail}`));
         return;
       }
       resolve(rawOutput.trim());
@@ -152,6 +160,7 @@ function runImplementationPhase(instruction, plan, worktreePath, onProgress) {
 
     let fullOutput = '';
     let lineBuffer = '';
+    let stderrBuf = '';
     let filesRead = 0;
     let filesWritten = 0;
     let lastAction = '';
@@ -184,14 +193,21 @@ function runImplementationPhase(instruction, plan, worktreePath, onProgress) {
     });
 
     proc.stderr.on('data', chunk => {
-      logger.debug(`/dev impl stderr: ${chunk.toString().slice(0, 200)}`);
+      const s = chunk.toString();
+      stderrBuf += s;
+      logger.debug(`/dev impl stderr: ${s.slice(0, 200)}`);
     });
-    proc.on('error', err => { clearInterval(progressTimer); reject(err); });
+    proc.on('error', err => {
+      clearInterval(progressTimer);
+      const detail = stderrBuf ? `\nStderr: ${stderrBuf.slice(-500)}` : '';
+      reject(new Error(err.message + detail));
+    });
     proc.on('close', code => {
       clearInterval(progressTimer);
       if (timedOut) return;
       if (code !== 0 && code !== null) {
-        reject(new Error(`Claude Code (implementation) exited with code ${code}`));
+        const detail = stderrBuf ? `\nStderr: ${stderrBuf.slice(-500)}` : '';
+        reject(new Error(`Claude Code (implementation) exited with code ${code}${detail}`));
       } else {
         resolve(fullOutput);
       }
