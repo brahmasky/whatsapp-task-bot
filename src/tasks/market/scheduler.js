@@ -2,7 +2,6 @@
  * Market Update Scheduler
  *
  * Handles scheduled market updates:
- * - Pre-market: 8:00 AM ET on market days
  * - Post-market: 4:30 PM ET on market days
  * - Weekly: 9:00 AM ET on Saturdays
  */
@@ -15,28 +14,36 @@ import logger from '../../utils/logger.js';
 let scheduledJobs = [];
 let sendFunction = null;
 let targetUserId = null;
+let isReadyFn = () => true;
+
+/**
+ * Wait for the messaging channel to become ready, polling every 5s.
+ * Returns true if ready within the timeout, false if it timed out.
+ */
+async function waitForReady(timeoutMs = 120_000) {
+  if (isReadyFn()) return true;
+  logger.info('Channel not ready — waiting up to 2 min before sending update...');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 5_000));
+    if (isReadyFn()) return true;
+  }
+  return false;
+}
 
 /**
  * Initialize the scheduler
  * @param {Function} send - Function to send WhatsApp messages
  * @param {string} userId - User ID to send updates to
+ * @param {Function} [isReady] - Optional: returns true when the channel is connected
  */
-export function initScheduler(send, userId) {
+export function initScheduler(send, userId, isReady = () => true) {
   sendFunction = send;
   targetUserId = userId;
+  isReadyFn = isReady;
 
   // Clear any existing jobs
   stopScheduler();
-
-  // Pre-market: 8:00 AM ET, Mon-Fri
-  // Cron uses server timezone, so we need to handle ET conversion
-  // For simplicity, assuming server is in ET or we adjust accordingly
-  const preMarketJob = cron.schedule('0 8 * * 1-5', async () => {
-    await runScheduledUpdate('pre-market');
-  }, {
-    timezone: 'America/New_York',
-  });
-  scheduledJobs.push(preMarketJob);
 
   // Post-market: 4:30 PM ET, Mon-Fri
   const postMarketJob = cron.schedule('30 16 * * 1-5', async () => {
@@ -55,7 +62,6 @@ export function initScheduler(send, userId) {
   scheduledJobs.push(weeklyJob);
 
   logger.info('Market update scheduler initialized');
-  logger.info('  Pre-market:  8:00 AM ET, Mon-Fri');
   logger.info('  Post-market: 4:30 PM ET, Mon-Fri');
   logger.info('  Weekly:      9:00 AM ET, Saturday');
 }
@@ -64,10 +70,13 @@ export function initScheduler(send, userId) {
  * Run a scheduled update
  */
 async function runScheduledUpdate(updateType) {
+  // Log first — before any early-return checks — so we can confirm the cron tick fired
+  logger.info(`Scheduled cron tick: ${updateType}`);
+
   const now = getEasternTime();
 
-  // Skip pre/post market on non-market days
-  if ((updateType === 'pre-market' || updateType === 'post-market') && !isMarketDay(now)) {
+  // Skip post-market on non-market days
+  if (updateType === 'post-market' && !isMarketDay(now)) {
     logger.info(`Skipping ${updateType} update - market closed`);
     return;
   }
@@ -81,6 +90,14 @@ async function runScheduledUpdate(updateType) {
     logger.info(`Running scheduled ${updateType} update...`);
 
     const message = await generateMarketUpdate(updateType);
+
+    // Ensure the channel is connected before sending — it may have briefly dropped
+    // (e.g. WhatsApp disconnecting at the exact cron tick time)
+    const ready = await waitForReady();
+    if (!ready) {
+      logger.error(`${updateType} update generated but channel not ready after 2 min — discarding`);
+      return;
+    }
 
     await sendFunction({
       type: 'text',
@@ -166,9 +183,6 @@ function getNextRunTimes() {
     }
     return null;
   }
-
-  const nextPre = findNext(8, 0, isMarketDay);
-  if (nextPre) times.push({ type: 'pre-market', time: nextPre.toISOString() });
 
   const nextPost = findNext(16, 30, isMarketDay);
   if (nextPost) times.push({ type: 'post-market', time: nextPost.toISOString() });

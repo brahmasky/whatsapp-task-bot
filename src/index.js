@@ -75,7 +75,7 @@ async function main() {
   let sendFn = null;
   if (schedulerUserId) {
     sendFn = gateway.createSender('whatsapp');
-    initScheduler(sendFn, schedulerUserId);
+    initScheduler(sendFn, schedulerUserId, () => whatsappChannel.isReady());
     initAlertMonitor(sendFn);
   } else {
     logger.warn('No allowed users configured - market scheduler and trade alerts disabled');

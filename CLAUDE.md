@@ -80,7 +80,7 @@ No test or lint scripts are configured.
 ### /market Data Flow
 
 ```
-  Scheduled (8AM/4:30PM ET)              On-demand (/market)
+  Scheduled (4:30PM ET)                  On-demand (/market)
          │                                      │
          └──────────────┬───────────────────────┘
                         ▼
@@ -321,7 +321,9 @@ Claude-powered portfolio analysis using live E*TRADE data via MCP.
 
 **Portfolio cache:** Saved to disk after each successful run (`cache.service.js`). Used by `/market` for real-time P&L without calling E*TRADE on every market update.
 
-**Subcommand:** `/portfolio logout` — clears stored OAuth tokens from Keychain
+**Analysis cache:** After each production agent run, analysis is saved to `data/portfolio-analysis.json` with a position signature (sorted `SYMBOL:qty` pairs). On the next `/portfolio` call, if positions haven't changed and cache is < 24h old, the cached analysis is returned instantly at $0. `/portfolio refresh` always forces a fresh agent run.
+
+**Subcommands:** `/portfolio logout` — clears stored OAuth tokens from Keychain; `/portfolio refresh` — forces a fresh agent run bypassing the 24h analysis cache
 
 **States:** `awaiting_pin` (PIN-based OAuth) → done
 
@@ -342,7 +344,6 @@ Sector rotation analysis with portfolio context. Runs on a cron schedule and on 
 - `/market scorecard` (alias `card`) — multi-day sector performance scorecard via `fetchSectorHistory()`
 
 **Scheduled updates** (market days only):
-- Pre-market: 8:00 AM ET
 - Post-market: 4:30 PM ET
 - Weekly summary: 9:00 AM ET on Saturdays
 

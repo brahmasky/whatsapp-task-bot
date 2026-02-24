@@ -4,6 +4,7 @@ import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.s
 import { runPortfolioAgent } from './agent.service.js';
 import { getETradeClient } from '../../mcp/client.js';
 import { savePortfolioCache } from '../market/cache.service.js';
+import { load, save } from '../../utils/persistence.service.js';
 import config from '../../config/index.js';
 import logger from '../../utils/logger.js';
 import { replyLong } from '../../utils/message.js';
@@ -42,6 +43,8 @@ export default {
       return await this.handleLogout(ctx);
     }
 
+    const forceRefresh = subcommand === 'refresh';
+
     // Check for required config
     if (!config.etrade.consumerKey || !config.etrade.consumerSecret) {
       await ctx.reply(
@@ -60,6 +63,9 @@ export default {
       ctx.completeTask();
       return;
     }
+
+    // Store forceRefresh in task data so fetchAndAnalyze can read it after auth
+    ctx.updateTask('checking_auth', { forceRefresh });
 
     const envLabel = config.etrade.sandbox ? '🧪 SANDBOX' : '🔴 PRODUCTION';
     await ctx.reply(`Checking E*TRADE authentication... [${envLabel}]`);
@@ -234,8 +240,34 @@ export default {
 
         await replyLong(ctx.reply.bind(ctx), `Positions:\n${positionsText}`);
       } else {
+        // Compute position signature for cache invalidation
+        const positionsSig = positions
+          .map(p => `${p.symbol}:${p.quantity}`)
+          .sort()
+          .join(',');
+
+        const forceRefresh = ctx.getTaskData()?.forceRefresh ?? false;
+        const cached = !forceRefresh ? load('portfolio-analysis') : null;
+        const CACHE_TTL = 24 * 60 * 60 * 1000;
+
+        if (cached && cached.positionsSig === positionsSig && (Date.now() - cached.cachedAt) < CACHE_TTL) {
+          const ageH = Math.round((Date.now() - cached.cachedAt) / 3600000);
+          await ctx.reply(
+            `[cached ${ageH}h ago — positions unchanged]\n\n` +
+            `Use /portfolio refresh for a fresh analysis.`
+          );
+          await replyLong(ctx.reply.bind(ctx), cached.analysis);
+          await ctx.reply(
+            `Cached stats:\n` +
+            `• Tool calls: ${cached.toolCalls}\n` +
+            `• Tokens: ${cached.usage.inputTokens.toLocaleString()} in + ${cached.usage.outputTokens.toLocaleString()} out`
+          );
+          await this.cleanup(ctx);
+          return;
+        }
+
         // Production mode - use AI agent with MCP tools
-        await ctx.reply(`🤖 Starting AI advisor agent [${envLabel}]...\n\nThe agent will analyze your portfolio using MCP servers.`);
+        await ctx.reply(`Starting AI advisor agent [${envLabel}]...\n\nThe agent will analyze your portfolio using MCP servers.`);
 
         ctx.updateTask('analyzing');
 
@@ -246,6 +278,15 @@ export default {
         };
 
         const { analysis, usage, toolCalls } = await runPortfolioAgent(onUpdate);
+
+        // Save analysis to cache
+        save('portfolio-analysis', {
+          analysis,
+          positionsSig,
+          cachedAt: Date.now(),
+          usage,
+          toolCalls,
+        });
 
         // Show what the agent did
         if (toolUpdates.length > 0) {

@@ -156,7 +156,8 @@ Credentials (username/password) are stored securely in macOS Keychain — never 
 Claude-powered portfolio analysis using live E*TRADE data via MCP.
 
 ```
-/portfolio           ← full analysis
+/portfolio           ← full analysis (cached 24h if positions unchanged)
+/portfolio refresh   ← force fresh analysis bypassing cache
 /portfolio logout    ← clear stored OAuth tokens
 ```
 
@@ -167,6 +168,8 @@ Claude-powered portfolio analysis using live E*TRADE data via MCP.
 4. Returns: total value, position breakdown, sector exposure, gains/losses, and actionable advice
 
 Portfolio data is cached locally after each run — used by `/market` for real-time P&L without hitting E*TRADE again.
+
+AI analysis is cached for 24h and reused if positions (symbol+qty) haven't changed. Use `/portfolio refresh` to force a new agent run.
 
 ---
 
@@ -188,7 +191,6 @@ Sector rotation analysis with portfolio context. Runs automatically on a schedul
 | `/market scorecard` | Multi-day sector performance scorecard |
 
 **Scheduled updates** (market days only):
-- **Pre-market:** 8:00 AM ET
 - **Post-market:** 4:30 PM ET
 - **Weekly summary:** 9:00 AM ET on Saturdays
 
