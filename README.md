@@ -67,7 +67,7 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
     │          src/shared/                │◄───────────────────────────────┘
     │  yahoo.service  │  agent.service    │
     │  etrade.helper  │  auth.service     │
-    │  etrade.order   │                   │
+    │  etrade.order   │  reauth           │
     └────────┬────────────────┬───────────┘
              │                │
              ▼                ▼
@@ -142,7 +142,9 @@ The `/trade` command places a GFD BUY LIMIT order immediately and automatically 
 
 **Cash check:** Live E*TRADE cash balance is verified before placing any order. Order is blocked if insufficient funds.
 
-**Token expiry:** E*TRADE OAuth tokens expire at midnight ET. Both `/trade` and `/research` inline trade handle re-authentication inline without needing to switch to `/portfolio`.
+**Token expiry:** E*TRADE OAuth tokens expire at midnight ET. Both `/trade` and `/research` inline trade handle re-authentication inline (via `src/shared/reauth.js`) without needing to switch to `/portfolio`.
+
+**GFD expiry warning:** If a GFD order is still open at 3:30 PM ET, the fill monitor sends a one-time warning giving you 30 minutes to decide whether to let it expire or cancel and re-run tomorrow.
 
 **Fill monitor persistence:** Pending orders are saved to `data/pending-fills.json` on every change. On restart, the monitor restores from disk and immediately checks status — a bot restart never loses track of an open order. Use `/trade list` anytime to see live E*TRADE status.
 

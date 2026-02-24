@@ -178,6 +178,8 @@ No test or lint scripts are configured.
 - Placing/cancelling E*TRADE orders? → `shared/etrade.order.js`
 - Running E*TRADE OAuth? → `shared/auth.service.js`
 - Fetching news? → `tasks/portfolio/news.service.js`
+- Re-authenticating mid-task (token expired)? → `shared/reauth.js`
+- Sending a reply that might be too long for WhatsApp? → `utils/message.js`
 
 ## Adding a New Task
 
@@ -323,6 +325,8 @@ The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitor
 **Portfolio cache:** Refreshed (fire-and-forget) after fill + exit orders placed, so `/market` P&L stays current. Not refreshed after BUY placed (order is pending, portfolio unchanged).
 
 **Fill monitor persistence:** Pending fills are written to `data/pending-fills.json` on every change. On startup, the monitor restores from disk and immediately checks status — so a bot restart (nodemon, crash) does not lose track of open orders. The map key is `SYMBOL:userId:buyOrderId`, supporting multiple simultaneous orders for the same symbol.
+
+**GFD pre-expiry warning:** If a GFD order is still OPEN at 3:30–3:59 PM ET on a weekday, the fill monitor sends a one-time warning. The `preExpiryWarned` flag is persisted to disk so the warning fires exactly once per order even across restarts.
 
 **Token expiry:** Both `/trade` and `/research` inline trade handle re-auth inline (`awaiting_pin` state). Plan data is preserved in task state so the order is placed automatically after PIN exchange.
 
