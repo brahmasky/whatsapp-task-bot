@@ -27,6 +27,7 @@ import {
 import { initScheduler, getSchedulerStatus, sendSchedulerPing, scheduleTestIn } from './scheduler.js';
 import { fetchMarketNews } from '../portfolio/news.service.js';
 import logger from '../../utils/logger.js';
+import config from '../../config/index.js';
 
 /**
  * Generate a market update
@@ -152,7 +153,11 @@ export default {
         return;
 
       } else if (arg === 'ping') {
-        // Test scheduler send path directly (no market check, no update generation)
+        if (!config.etrade.sandbox) {
+          await ctx.reply('⚠️ /market ping is only available in sandbox mode.');
+          ctx.completeTask();
+          return;
+        }
         try {
           await sendSchedulerPing();
           await ctx.reply('Scheduler ping sent via sendFunction. Did you receive a separate message?');
@@ -163,7 +168,11 @@ export default {
         return;
 
       } else if (arg === 'test') {
-        // Register a one-time cron job firing in 3 minutes
+        if (!config.etrade.sandbox) {
+          await ctx.reply('⚠️ /market test is only available in sandbox mode.');
+          ctx.completeTask();
+          return;
+        }
         scheduleTestIn(3);
         await ctx.reply('Test cron job registered — you should receive a ping message in ~3 minutes if cron is working.');
         ctx.completeTask();

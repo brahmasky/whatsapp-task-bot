@@ -320,7 +320,7 @@ The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitor
 
 **Portfolio cache:** Refreshed (fire-and-forget) after fill + exit orders placed, so `/market` P&L stays current. Not refreshed after BUY placed (order is pending, portfolio unchanged).
 
-**Fill monitor persistence:** Pending fills are written to `data/pending-fills.json` on every change. On startup, the monitor restores from disk and immediately checks status — so a bot restart (nodemon, crash) does not lose track of open orders.
+**Fill monitor persistence:** Pending fills are written to `data/pending-fills.json` on every change. On startup, the monitor restores from disk and immediately checks status — so a bot restart (nodemon, crash) does not lose track of open orders. The map key is `SYMBOL:userId:buyOrderId`, supporting multiple simultaneous orders for the same symbol.
 
 **Token expiry:** Both `/trade` and `/research` inline trade handle re-auth inline (`awaiting_pin` state). Plan data is preserved in task state so the order is placed automatically after PIN exchange.
 

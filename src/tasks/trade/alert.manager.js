@@ -29,9 +29,13 @@ const FILLS_FILE = path.resolve(
   '../../../data/pending-fills.json'
 );
 
-// key: `${SYMBOL}:${userId}`
+// key: `${SYMBOL}:${userId}:${buyOrderId}`
 // value: { symbol, userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice, placedAt }
 const pendingFills = new Map();
+
+function _key(symbol, userId, buyOrderId) {
+  return `${symbol.toUpperCase()}:${userId}:${buyOrderId}`;
+}
 
 let monitorJob = null;
 let sendFn = null;
@@ -65,7 +69,7 @@ function _loadFills() {
  * Called immediately after a BUY LIMIT order is placed.
  */
 export function addPendingFill({ symbol, userId, buyOrderId, accountIdKey, qty, takeProfit, stopLoss, limitPrice }) {
-  const key = `${symbol.toUpperCase()}:${userId}`;
+  const key = _key(symbol, userId, buyOrderId);
   pendingFills.set(key, {
     symbol: symbol.toUpperCase(),
     userId,
@@ -85,13 +89,13 @@ export function addPendingFill({ symbol, userId, buyOrderId, accountIdKey, qty, 
  * Remove a pending fill (e.g. user cancelled the order).
  * @returns {boolean} true if an entry was found and removed
  */
-export function removePendingFill(symbol, userId) {
-  const key = `${symbol.toUpperCase()}:${userId}`;
+export function removePendingFill(symbol, userId, buyOrderId) {
+  const key = _key(symbol, userId, buyOrderId);
   const existed = pendingFills.has(key);
   if (existed) {
     pendingFills.delete(key);
     _saveFills();
-    logger.info(`Pending fill removed: ${symbol} for user ${userId}`);
+    logger.info(`Pending fill removed: ${symbol} #${buyOrderId} for user ${userId}`);
   }
   return existed;
 }
@@ -109,8 +113,16 @@ export function listPendingFills(userId) {
  * @returns {boolean} true if a pending fill was found and triggered
  */
 export async function forceTriggerFill(symbol, userId) {
-  const key = `${symbol.toUpperCase()}:${userId}`;
-  const fill = pendingFills.get(key);
+  const upperSymbol = symbol.toUpperCase();
+  let key = null;
+  let fill = null;
+  for (const [k, v] of pendingFills) {
+    if (v.symbol === upperSymbol && v.userId === userId) {
+      key = k;
+      fill = v;
+      break;
+    }
+  }
   if (!fill) return false;
 
   logger.info(`Force-triggering fill for ${symbol} #${fill.buyOrderId} (sandbox test)`);

@@ -369,11 +369,11 @@ const tradeTask = {
       const fill = fills[0];
       try {
         await cancelBuyOrder(fill.accountIdKey, fill.buyOrderId);
-        removePendingFill(ticker, userId);
+        removePendingFill(ticker, userId, fill.buyOrderId);
         await ctx.reply(`✅ BUY order #${fill.buyOrderId} for ${ticker} cancelled.`);
       } catch (err) {
         logger.error(`Failed to cancel order #${fill.buyOrderId} for ${ticker}: ${err.message}`);
-        removePendingFill(ticker, userId);
+        removePendingFill(ticker, userId, fill.buyOrderId);
         await ctx.reply(
           `⚠️ Could not cancel on E*TRADE: ${err.message}\n` +
           `Removed from local tracking — please cancel #${fill.buyOrderId} manually if still open.`

@@ -27,6 +27,13 @@ export async function getLivePortfolioValuation() {
     };
   }
 
+  if (cache.cacheAge.isVeryStale) {
+    return {
+      available: false,
+      reason: `Portfolio data is ${cache.cacheAge.days} days old — too stale for P&L context. Run /portfolio to refresh.`,
+    };
+  }
+
   // Get unique symbols
   const symbols = [...new Set(cache.positions.map(p => p.symbol))];
 
