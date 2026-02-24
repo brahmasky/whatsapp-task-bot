@@ -135,7 +135,7 @@ No test or lint scripts are configured.
 ```
 
 **Core Components (`src/core/`):**
-- `whatsapp.service.js` - WhatsApp connection via Baileys, QR auth, message handling
+- `whatsapp.service.js` - WhatsApp connection via Baileys, QR auth, message handling. Fetches the live WhatsApp Web version via `fetchLatestWaWebVersion()` on every startup (bundled version goes stale and causes connection rejection). Uses `Browsers.macOS('Chrome')` as the device identifier. Reconnect logic distinguishes fatal reasons (loggedOut, badSession, forbidden, connectionReplaced, multideviceMismatch — stop immediately) from retryable ones (exponential backoff 3s→24s, max 10 attempts). Generation counter prevents stale socket events from interfering with retry counting.
 - `message.router.js` - Routes commands to tasks, handles authorization, creates task context
 - `task.registry.js` - Registers tasks, provides lookup by command
 - `state.manager.js` - Per-user state storage (in-memory), stale task cleanup
