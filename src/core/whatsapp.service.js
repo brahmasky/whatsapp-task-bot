@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, Browsers } from '@whiskeysockets/baileys';
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, Browsers, fetchLatestWaWebVersion } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { readFileSync } from 'fs';
 import { inspect } from 'util';
@@ -50,6 +50,11 @@ class WhatsAppService {
     const authPath = path.join(process.cwd(), '.baileys_auth');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
 
+    // Fetch current WhatsApp Web version — the bundled version in Baileys goes stale
+    // and WhatsApp rejects connections with an outdated version number
+    const { version, isLatest } = await fetchLatestWaWebVersion();
+    logger.info(`WhatsApp Web version: ${version.join('.')}${isLatest ? '' : ' (fallback — could not fetch latest)'}`);
+
     const baileysDebug = process.env.LOG_LEVEL === 'debug';
     const baileysLogger = {
       level: baileysDebug ? 'info' : 'silent',
@@ -64,6 +69,7 @@ class WhatsAppService {
 
     // Create socket connection
     this.socket = makeWASocket({
+      version,
       auth: state,
       browser: Browsers.macOS('Chrome'),
       logger: baileysLogger,
