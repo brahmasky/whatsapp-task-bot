@@ -89,59 +89,160 @@ An extensible Node.js automation bot that runs on WhatsApp, enabling automated w
     └──────────────┘
 ```
 
-## Available Commands
+## Commands
+
+### Global & System
+
+Built-in framework commands — always available, no active task required.
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Show available commands |
-| `/tasks` | List registered tasks |
-| `/cancel` | Cancel current task |
-| `/status` | Show current task status |
-| `/invoice` | Download and send TPG invoice (via WhatsApp and email) |
-| `/system` | macOS system stats (CPU, memory, disk, temperature) |
-| `/portfolio` | Claude-powered portfolio analysis with E*TRADE data |
-| `/market` | Current market status with sector rotation analysis |
+| `/help` | List all available commands with descriptions |
+| `/tasks` | Show registered task modules |
+| `/cancel` | Cancel the current active task |
+| `/status` | Show what task is currently running |
+| `/status health` | Bot health: uptime, memory, pending fills, recent log stats |
+
+---
+
+### `/system` — macOS Stats
+
+Displays a snapshot of your Mac's current health.
+
+```
+/system
+```
+
+Reports: CPU load average, memory pressure (used / wired / free), disk usage for all mounted volumes, and CPU temperature (via `osx-temperature-sensor`). No external APIs or credentials required.
+
+---
+
+### `/invoice` — TPG Invoice
+
+Automates the full TPG invoice download flow using Playwright browser automation.
+
+```
+/invoice
+```
+
+**Flow:**
+1. Bot checks macOS Keychain for stored TPG credentials; prompts on first run
+2. Playwright logs into the TPG portal and triggers an SMS verification code
+3. You reply with the 6-digit SMS code
+4. Bot downloads the invoice PDF
+5. PDF is sent via WhatsApp; optionally also emailed if `SMTP_*` env vars are set
+
+Credentials (username/password) are stored securely in macOS Keychain — never in `.env`. Requires `HEADLESS=false` if you need to see the browser.
+
+---
+
+### Portfolio & Market Analysis
+
+#### `/portfolio` — Portfolio Advisor
+
+Claude-powered portfolio analysis using live E*TRADE data via MCP.
+
+```
+/portfolio           ← full analysis
+/portfolio logout    ← clear stored OAuth tokens
+```
+
+**Flow:**
+1. Bot checks Keychain for OAuth tokens; if missing or expired, guides you through PIN-based auth
+2. Fetches accounts, balances, and all positions from E*TRADE
+3. Runs a Claude agent loop with E*TRADE MCP tools for deep analysis
+4. Returns: total value, position breakdown, sector exposure, gains/losses, and actionable advice
+
+Portfolio data is cached locally after each run — used by `/market` for real-time P&L without hitting E*TRADE again.
+
+---
+
+#### `/market` — Market Updates
+
+Sector rotation analysis with portfolio context. Runs automatically on a schedule and is also available on demand.
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/market` | Current market status with sector rotation |
 | `/market pre` | Force pre-market style update |
 | `/market post` | Force post-market style update |
 | `/market weekly` | Force weekly summary |
-| `/market deep` | Force deep analysis with research tools |
-| `/market status` | Scheduler info and next update times |
-| `/research TICKER` | AI-scored stock analysis (0-100) with fundamentals, recommendation, and entry plan |
+| `/market deep` | Force deep analysis with research tools (MCP) |
+| `/market status` | Scheduler info and next scheduled update times |
+| `/market ideas` | Auto-research the top 2 positive sector ETFs of the day |
+| `/market scorecard` | Multi-day sector performance scorecard |
+
+**Scheduled updates** (market days only):
+- **Pre-market:** 8:00 AM ET
+- **Post-market:** 4:30 PM ET
+- **Weekly summary:** 9:00 AM ET on Saturdays
+
+**Adaptive analysis tiers** — cost scales with market significance:
+
+| Level | Trigger | Model | Tools | Est. Cost |
+|-------|---------|-------|-------|-----------|
+| Template | SPY < 1% | none | no | $0 |
+| Haiku | SPY 1–1.5% | Haiku | no | ~$0.0001 |
+| Sonnet | SPY 1.5–2.5% | Sonnet | no | ~$0.001 |
+| Deep | SPY > 2.5% | Sonnet + agent loop | 3 MCP research tools | ~$0.03 |
+
+Deep analysis also triggers on: any major index > 2.5%, portfolio day change > 3%, or sector spread > 4%. Falls back to Sonnet on failure.
+
+---
+
+### Stock Research
+
+#### `/research` — AI Stock Analysis
+
+Runs a Sonnet agent loop to score a stock 0–100 across four dimensions, then produces an optional entry plan.
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/research TICKER` | Full AI analysis: score, recommendation, entry plan |
 | `/research compare A B C` | Compare up to 5 stocks in parallel — ranked score table, cache-aware |
-| `/research list` | Show all cached research reports with scores and age |
-| `/trade TICKER` | Place a GFD BUY LIMIT or MARKET order; TP and SL are optional |
-| `/trade list` | Show pending orders with live E*TRADE status |
+| `/research list` | Show all cached reports with scores and age |
+| `/research TICKER refresh` | Force a fresh fetch, bypassing the 24h cache |
+
+**Scoring dimensions (0–25 each):**
+
+| Dimension | What it measures |
+|-----------|-----------------|
+| Valuation | P/E vs sector norms, P/B, analyst target upside |
+| Quality | Profit margins, ROE, FCF generation, balance sheet |
+| Momentum | 52-week range position, recent 7-day price action |
+| Sentiment | News tone and recency of catalysts |
+
+Data: Yahoo Finance `quoteSummary` via yahoo-finance2 (primary, no key) with FMP `/stable/` as fallback when Yahoo data is sparse (free tier: 250 calls/day). Requires `ANTHROPIC_API_KEY`. Est. cost: ~$0.05/call.
+
+**Entry plan (BUY / STRONG BUY only):** After the report, reply `trade 1000` (budget) or `trade qty 14` (shares) to place a GFD BUY LIMIT inline — no need to switch to `/trade`. Limit price is set at the golden ratio (61.8%) of the suggested entry zone.
+
+**Compare** (`/research compare`): runs each symbol through the agent in parallel, reuses cached results where available, and returns a ranked table with `[c]` (cached) or `[f]` (fresh) markers.
+
+---
+
+### Trading
+
+#### `/trade` — Buy Orders
+
+Places a GFD BUY order and monitors for fill to auto-place optional TP/SL exits.
+
+**Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/trade TICKER` | Start a new buy — fetches current price, prompts for plan |
+| `/trade list` | Show all pending orders with live E*TRADE status |
 | `/trade cancel TICKER` | Cancel the pending BUY order on E*TRADE |
-| `/trade modify TICKER [tp X] [sl Y]` | Cancel and replace TP/SL orders for a completed trade |
-| `/trade journal` | Export full trade history as a CSV file |
+| `/trade modify TICKER [tp X] [sl Y]` | Cancel and replace TP/SL for a completed fill |
 | `/trade history` | Show last 10 completed trades |
+| `/trade journal` | Export full trade history as a CSV file to WhatsApp |
 | `/trade retry-exits TICKER` | Retry failed TP/SL placement after a fill |
 | `/trade track TICKER ORDER_ID ...` | Re-register an existing order after bot restart (recovery) |
-| `/trade fill TICKER` | Simulate a fill for sandbox testing |
-| `/sell TICKER` | Place a GFD SELL order for an existing position |
-| `/market ideas` | Auto-research top positive-performing sector leaders |
-| `/market scorecard` | Multi-day sector performance scorecard |
-| `/dev <question or instruction>` | Ask Claude Code a question about the codebase, or delegate a code change |
-
-### Research Scoring
-
-The `/research` command runs a Sonnet agent loop that scores a stock across four dimensions:
-
-| Dimension | What it measures | Max |
-|-----------|-----------------|-----|
-| Valuation | P/E vs sector norms, P/B, analyst target upside | 25 |
-| Quality | Profit margins, ROE, FCF generation, balance sheet | 25 |
-| Momentum | 52-week range position, recent price action | 25 |
-| Sentiment | News tone and recency of catalysts | 25 |
-
-Data sources: Yahoo Finance `quoteSummary` via yahoo-finance2 (primary, no key needed, better international coverage) with FMP `/stable/` API as fallback when Yahoo returns sparse data (free tier = 250 calls/day).
-Requires `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional but recommended. Est. cost: ~$0.05/call.
-
-**Entry plan (BUY / STRONG BUY only):** The agent produces an entry zone, take profit, stop loss, and R/R ratio based on 7-day OHLCV support levels. After receiving the report, reply `trade 1000` (budget) or `trade qty 14` (shares) to place the order inline — no need to switch to `/trade`. The limit price is set at the golden ratio (61.8%) of the entry zone for a better average cost than the ceiling.
-
-### Buying (/trade)
-
-The `/trade` command places a GFD BUY order immediately. TP and SL are optional — omit them for a simple buy with no auto-exits.
+| `/trade fill TICKER` | Simulate a fill (sandbox testing only) |
 
 **Plan syntax** (send after `/trade TICKER`):
 ```
@@ -154,36 +255,38 @@ buy market [tp <target>] [sl <stop>] qty <shares>
 **Examples:**
 ```
 buy 70 73 tp 81.30 sl 68 budget 1000   ← full bracket (auto TP+SL on fill)
-buy 70 73 budget 1000                   ← buy only, manage exit manually
+buy 70 73 budget 1000                   ← buy only, manage exits manually
 buy market budget 1000                  ← market order, no exits
-buy market tp 85 sl 68 qty 10          ← market with exits
+buy market tp 85 sl 68 qty 10          ← market order with exits
 ```
 
 **Flow:**
 1. `/trade UBER` — fetch current price, show prompt
 2. Enter plan
-3. Review shown (price, TP/SL if set, est. cost, R/R if applicable) → reply `confirm`
-4. Bot checks live cash balance, places **BUY LIMIT at golden ratio of zone** (61.8%) or MARKET order — all **Good for Day**
+3. Review shown (TP/SL if set, est. cost, R/R if both exits configured) → reply `confirm`
+4. Bot checks live cash balance, places **BUY LIMIT at golden ratio** (61.8% of zone) or MARKET — all **Good for Day**
 5. Fill monitor polls every 60s — on EXECUTED, auto-places any configured TP/SL exits
 
 **Key behaviours:**
 - All orders are **Good for Day** — expire at market close, never linger as GTC
-- TP and SL are independently optional. If omitted, fill notification is sent with no auto-exits
-- BUY is placed first; TP/SL only placed after EXECUTED — no accidental short sell
+- TP and SL are independently optional — omit either or both for a plain buy
+- BUY placed first; TP/SL only after EXECUTED — no accidental short sell
 - Cash check before every order; blocked if insufficient
 - GFD expiry warning sent at 3:30 PM ET if order is still open
 - Pending orders persist to `data/pending-fills.json` — survives restarts
-- Re-auth handled inline if token expired mid-flow
+- Re-auth handled inline if token expires mid-flow
 
-### Selling (/sell)
+---
 
-The `/sell` command places a single GFD SELL order for an existing position.
+#### `/sell` — Sell Orders
+
+Places a single GFD SELL order for an existing position. One-shot exit — no TP/SL.
 
 **Plan syntax** (send after `/sell TICKER`):
 ```
 sell <qty> <price>     ← limit sell, GFD
 sell <qty> market      ← market sell
-sell all <price>       ← sell full position (fetches qty from E*TRADE), limit GFD
+sell all <price>       ← sell full position at limit (fetches qty from E*TRADE)
 sell all market        ← sell full position at market
 ```
 
@@ -193,13 +296,20 @@ sell 50 85.00
 sell all market
 ```
 
-No TP/SL — this is a one-shot exit order. Re-auth handled inline if token expired.
+**Flow:**
+1. `/sell UBER` — prompt for sell plan
+2. Enter plan
+3. Review shown → `confirm` to place, `edit` to revise
+4. `sell all` auto-fetches your current position size from E*TRADE
+5. Re-auth handled inline if token expires
 
-### Bot Development (/dev)
+---
 
-The `/dev` command lets you interact with the codebase via natural language — either asking questions or delegating code changes — using the locally-installed Claude Code CLI. Zero API cost: uses your Claude Pro subscription.
+### `/dev` — Bot Development
 
-**Questions** (answered immediately, no confirmation needed):
+Delegates codebase questions and code changes to the locally-installed Claude Code CLI. Zero API cost — uses your Claude Pro subscription.
+
+**Questions** (answered immediately):
 ```
 /dev how does the fill monitor work?
 /dev why does /research fall back to FMP?
@@ -212,27 +322,13 @@ The `/dev` command lets you interact with the codebase via natural language — 
 /dev refactor the market scheduler to support configurable times
 ```
 
-For build tasks, Claude Code first reads the codebase and outputs a plan. You can `confirm`, give `update: <feedback>` to revise, or `discard`. On confirm, implementation runs in a git worktree under `/tmp/` (outside the project directory, so nodemon doesn't restart mid-execution). After implementation, review the diff and `confirm` to merge or `discard` to cancel.
+**Flow for code changes:**
+1. Claude Code reads the codebase and outputs a plan
+2. Reply `confirm`, `update: <feedback>` to revise, or `discard`
+3. On confirm: implementation runs in a git worktree under `/tmp/` (nodemon never sees it)
+4. Diff shown — `confirm` to merge into `src/` (nodemon restarts bot), or `discard`
 
 **Requires:** Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`) and authenticated via `claude` in your terminal.
-
-### Market Analysis Tiers
-
-The `/market` command uses an adaptive analysis system that scales cost with market significance:
-
-| Level | Trigger | Model | Tools | Est. Cost |
-|-------|---------|-------|-------|-----------|
-| Template | SPY < 1% | none | no | $0 |
-| Haiku | SPY 1-1.5% | Haiku | no | ~$0.0001 |
-| Sonnet | SPY 1.5-2.5% | Sonnet | no | ~$0.001 |
-| Deep | SPY > 2.5% | Sonnet + agent loop | 3 research tools (MCP) | ~$0.03 |
-
-Deep analysis also triggers on: any major index > 2.5%, portfolio day change > 3%, or sector spread > 4%. On failure, falls back to regular Sonnet.
-
-Scheduled updates run automatically on market days:
-- **Pre-market:** 8:00 AM ET
-- **Post-market:** 4:30 PM ET
-- **Weekly summary:** 9:00 AM ET on Saturdays
 
 ## Configuration
 

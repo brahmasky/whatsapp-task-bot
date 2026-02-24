@@ -255,182 +255,227 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 **Note:** You must first authenticate via the WhatsApp bot (`/portfolio`) to store OAuth tokens in keychain before using the MCP server.
 
-## Market Updates (/market)
+## Task Reference
 
-The `/market` command provides sector rotation analysis with portfolio context.
+### Global & System Commands
 
-**Features:**
-- Track 11 S&P sector ETFs + major indices (SPY, QQQ, DIA, IWM)
-- Sector rotation analysis (leaders, laggards, defensive/cyclical signal)
-- Live portfolio valuation using cached positions + Yahoo prices
-- Hybrid Claude analysis (template/Haiku/Sonnet/Deep based on market conditions)
-- Deep analysis agent with research tools on extreme market events (SPY > 2.5%)
+**Global commands** are built into `src/core/message.router.js` — always available regardless of active task:
 
-**Scheduled Updates:**
-- Pre-market: 8:00 AM ET on market days
-- Post-market: 4:30 PM ET on market days
-- Weekly summary: 9:00 AM ET on Saturdays
+| Command | Description |
+|---------|-------------|
+| `/help` | List all registered commands |
+| `/tasks` | Show all task modules |
+| `/cancel` | Cancel the current active task |
+| `/status` | Show the running task and its current state |
+| `/status health` | Bot health: uptime, memory, pending fills, recent log stats (uses `logger.getRecent()`) |
+
+---
+
+### `/system` — macOS Stats
+
+**Key file:** `src/tasks/system/index.js`
+
+Reports a snapshot of the host machine's health. No external APIs or credentials required.
+
+- CPU: load averages (1/5/15 min) via `os.loadavg()`
+- Memory: used / wired / free via macOS `vm_stat`
+- Disk: usage for all mounted volumes via `df -k`
+- Temperature: CPU temp via `osx-temperature-sensor`
+
+Single-turn command — completes immediately, no state machine needed.
+
+---
+
+### `/invoice` — TPG Invoice
+
+**Key files:** `src/tasks/invoice/index.js`, `src/tasks/invoice/tpg.service.js`, `src/tasks/invoice/keychain.service.js`
+
+Automates the full TPG invoice download flow using Playwright.
+
+**Flow:**
+1. Check macOS Keychain for stored TPG credentials; prompt user on first run
+2. Playwright launches browser (`HEADLESS` env var), logs into TPG portal, triggers SMS OTP
+3. User replies with 6-digit SMS code
+4. Bot completes login, downloads invoice PDF
+5. PDF sent via WhatsApp (`ctx.sendDocument`); also emailed if `SMTP_*` env vars configured
+
+**Credentials:** username/password stored in macOS Keychain via `keychain.service.js` — never written to disk or `.env`. Uses `execFile` (not `exec`) for all Keychain operations — no shell interpolation risk.
+
+**States:** `awaiting_otp` (waiting for user's SMS code) → done
+
+---
+
+### Portfolio & Market Analysis
+
+#### `/portfolio` — Portfolio Advisor
+
+**Key files:** `src/tasks/portfolio/index.js`, `src/tasks/portfolio/agent.service.js`, `src/tasks/portfolio/etrade.service.js`
+
+Claude-powered portfolio analysis using live E*TRADE data via MCP.
+
+**Flow:**
+1. Check Keychain for OAuth tokens; if missing/expired → start PIN-based auth flow via `shared/auth.service.js`
+2. Fetch accounts, balances, positions from E*TRADE
+3. Run Claude agent loop with E*TRADE MCP tools (`src/mcp/etrade-server.js`)
+4. Reply with total value, position breakdown, sector exposure, gains/losses, and advice
+
+**Portfolio cache:** Saved to disk after each successful run (`cache.service.js`). Used by `/market` for real-time P&L without calling E*TRADE on every market update.
+
+**Subcommand:** `/portfolio logout` — clears stored OAuth tokens from Keychain
+
+**States:** `awaiting_pin` (PIN-based OAuth) → done
+
+---
+
+#### `/market` — Market Updates
+
+**Key files:** `src/tasks/market/index.js`, `src/tasks/market/sector.service.js`, `src/tasks/market/cache.service.js`
+
+Sector rotation analysis with portfolio context. Runs on a cron schedule and on demand.
 
 **Commands:**
-- `/market` - Current market status
-- `/market status` - Scheduler info and next update times
-- `/market pre` - Force pre-market style update
-- `/market post` - Force post-market style update
-- `/market weekly` - Force weekly summary
-- `/market deep` - Force deep analysis with research tools
-- `/market ideas` - Auto-research top 2 positive-performing sector ETFs (ranked score table via compare service)
-- `/market scorecard` (or `/market card`) - Multi-day sector performance scorecard
+- `/market` — current market status
+- `/market pre` / `/market post` / `/market weekly` — force a specific update style
+- `/market deep` — force deep analysis with MCP research tools
+- `/market status` — scheduler info and next update times
+- `/market ideas` — auto-research top 2 positive-change sector ETFs (via `shared/compare.service.js`)
+- `/market scorecard` (alias `card`) — multi-day sector performance scorecard via `fetchSectorHistory()`
 
-**Portfolio Caching:**
-Portfolio data is cached locally when `/portfolio` runs. Market updates use this cache + live Yahoo prices to show real-time P&L without calling E*TRADE API.
+**Scheduled updates** (market days only):
+- Pre-market: 8:00 AM ET
+- Post-market: 4:30 PM ET
+- Weekly summary: 9:00 AM ET on Saturdays
 
-**Analysis Tiers:**
+**Adaptive analysis tiers:**
 | Level | Trigger | Model | Tools | Cost |
 |-------|---------|-------|-------|------|
 | template | SPY < 1% | none | no | $0 |
-| haiku | SPY 1-1.5% | Haiku | no | ~$0.0001 |
-| sonnet | SPY 1.5-2.5% | Sonnet | no | ~$0.001 |
-| deep | SPY > 2.5% | Sonnet + agent loop | 3 research (MCP) | ~$0.03 |
+| haiku | SPY 1–1.5% | Haiku | no | ~$0.0001 |
+| sonnet | SPY 1.5–2.5% | Sonnet | no | ~$0.001 |
+| deep | SPY > 2.5% | Sonnet + agent loop | 3 MCP research tools | ~$0.03 |
 
-Deep analysis also triggers on: any major index > 2.5%, portfolio day change > 3%, or sector spread > 4%. On failure, falls back to regular Sonnet.
+Deep also triggers on: any major index > 2.5%, portfolio day change > 3%, sector spread > 4%. Falls back to sonnet on failure.
 
-## Stock Research (/research)
+**Portfolio caching:** Market updates use the locally-cached portfolio data + live Yahoo prices to show P&L without calling E*TRADE API on every run.
 
-The `/research TICKER` command fetches fundamentals and runs a Sonnet agent loop to score a stock 0-100.
+---
 
-**Usage:** `/research AAPL`
+### Stock Research
 
-**Architecture:**
-1. Fetch price + 52w range from Yahoo Finance via `shared/yahoo.service.js` (60s cache)
-2. Fetch last 7 trading days OHLCV via yahoo-finance2 `chart()` for entry plan support/resistance
-3. Fetch fundamentals via yahoo-finance2 `quoteSummary` (primary — no key, better international coverage) using modules: `assetProfile`, `summaryDetail`, `financialData`, `defaultKeyStatistics`, `recommendationTrend`, `calendarEvents`, `earningsTrend`, `upgradeDowngradeHistory`
-4. Fall back to FMP `/stable/` endpoints if Yahoo returns sparse data (<2 of 5 key metrics non-null)
-5. Run Sonnet agent loop (max 4 turns) via `shared/agent.service.js` with scratchpad reasoning
-6. Agent calls `get_news` tool (inline via Google News RSS) for sentiment
-7. Agent outputs JSON: score, 4 sub-scores, recommendation, summary, and optional `entryPlan`
+#### `/research` — AI Stock Analysis
 
-**Scoring dimensions (0-25 each):**
-- Valuation: P/E vs norms, P/B, analyst target upside
-- Quality: margins, ROE, FCF generation
-- Momentum: 52w range position, recent price action (7-day OHLCV)
-- Sentiment: news tone from `get_news` tool call
+**Key files:** `src/tasks/research/index.js`, `src/tasks/research/fundamentals.service.js`, `src/tasks/research/agent.service.js`
 
-**Entry plan (BUY / STRONG BUY only):**
-Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss`, `rrRatio`, `notes` based on 7-day OHLCV support levels. After the report, task stays alive in `awaiting_trade` state. User replies `trade 1000` (budget) or `trade qty 14` (fixed shares) to place a GFD BUY LIMIT at the golden ratio of the entry zone (`entryLow + (entryHigh - entryLow) * 0.618`) immediately — same order + fill-monitor path as `/trade`. Re-auth handled inline if token expired.
-
-**Research caching:** Results are cached to `data/research-cache/<SYMBOL>.json` for 24h. Second call within TTL serves from cache (instant, $0 cost). Use `/research AAPL refresh` to force a fresh fetch. Use `/research list` to see all cached symbols with scores and age.
-
-**Key files:**
-- `src/tasks/research/fundamentals.service.js` - Yahoo (yahoo-finance2) + FMP data fetching, OHLCV
-- `src/tasks/research/agent.service.js` - Sonnet agent loop with scratchpad and entry plan prompt
-- `src/tasks/research/index.js` - task definition, WhatsApp formatting, inline trade flow
-
-**Requires:** `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional (fallback for sparse data). Est. cost: ~$0.05/call.
-
-## Buying (/trade)
-
-The `/trade TICKER` command places a GFD BUY order immediately. TP and SL are optional — omit them for a simple buy with no auto-exits.
-
-**Plan syntax** (send after `/trade TICKER`):
-```
-buy <low> <high> [tp <target>] [sl <stop>] budget <amount>
-buy <low> <high> [tp <target>] [sl <stop>] qty <shares>
-buy market [tp <target>] [sl <stop>] budget <amount>
-buy market [tp <target>] [sl <stop>] qty <shares>
-```
-
-**Flow:**
-1. `/trade UBER` — fetch current price for reference, prompt for plan
-2. Enter: `buy 70 73 tp 81.30 sl 68 budget 1000` (or simpler: `buy 70 73 budget 1000`)
-3. Bot shows order review (R/R if both tp+sl set, estimated cost) and asks for `confirm` or `edit`
-4. On confirm: bot checks live cash balance, places **BUY LIMIT at golden ratio of zone** (`buyLow + (buyHigh - buyLow) * 0.618`) or MARKET order — all **Good for Day**
-5. E*TRADE handles execution — no price polling loop in the bot
-6. Fill monitor (`alert.manager.js`) polls every 60s — on EXECUTED, auto-places any configured TP (LIMIT SELL, GFD) + SL (STOP SELL, GFD)
-7. On GFD EXPIRED, user is notified with a ready-to-paste re-entry command for tomorrow
-
-**Order type:** BUY LIMIT at golden ratio (61.8%) of the buy zone, or MARKET. All orders are **Good for Day** — never linger as GTC.
-
-**TP and SL are independently optional.** If both omitted, fill notification sent with no auto-exits. If only one provided, that leg is placed and user manages the other manually.
-
-**Order sequencing:** BUY placed first. TP/SL placed only after BUY is EXECUTED — avoids accidental short sell.
-
-**Cash check:** `checkCashBalance()` fetches live `cashAvailableForInvestment` from E*TRADE before placing. Blocks if insufficient. Non-blocking on API failure (E*TRADE will also reject).
-
-**Portfolio cache:** Refreshed (fire-and-forget) after fill + exit orders placed, so `/market` P&L stays current. Not refreshed after BUY placed (order is pending, portfolio unchanged).
-
-**Fill monitor persistence:** Pending fills are written to `data/pending-fills.json` on every change. On startup, the monitor restores from disk and immediately checks status — so a bot restart (nodemon, crash) does not lose track of open orders. The map key is `SYMBOL:userId:buyOrderId`, supporting multiple simultaneous orders for the same symbol.
-
-**GFD pre-expiry warning:** If a GFD order is still OPEN at 3:30–3:59 PM ET on a weekday, the fill monitor sends a one-time warning. The `preExpiryWarned` flag is persisted to disk so the warning fires exactly once per order even across restarts.
-
-**Token expiry:** Both `/trade` and `/research` inline trade handle re-auth inline (`awaiting_pin` state). Plan data is preserved in task state so the order is placed automatically after PIN exchange.
-
-**Failed exit recovery:** If TP/SL placement fails after fill, the plan is saved to `data/pending-exits/<SYMBOL>-<userId>.json`. Use `/trade retry-exits TICKER` to re-attempt.
-
-**Trade history:** Every successful fill is appended to `data/trade-history.jsonl`. View with `/trade history` (last 10 entries). Export full CSV with `/trade journal`.
+Fetches fundamentals and runs a Sonnet agent loop to score a stock 0–100.
 
 **Commands:**
-- `/trade TICKER` — set a new trade plan (shows review before placing)
-- `/trade list` — show tracked orders with live E*TRADE status
-- `/trade cancel TICKER` — cancel the pending BUY order on E*TRADE
-- `/trade modify TICKER [tp X] [sl Y]` — cancel and replace TP/SL orders for a completed trade
-- `/trade history` — show last 10 completed trades
-- `/trade journal` — export full trade history as a CSV file
-- `/trade retry-exits TICKER` — retry failed TP/SL placement
-- `/trade track TICKER ORDER_ID qty N tp X sl Y [limit P]` — re-register an existing order after bot restart (recovery only)
-- `/trade fill TICKER` — simulate a fill (sandbox only)
+- `/research TICKER` — full analysis with score, recommendation, entry plan
+- `/research compare A B [C D E]` — parallel research on up to 5 stocks, ranked table; uses `shared/compare.service.js`
+- `/research list` — show all cached reports with scores and age
+- `/research TICKER refresh` — force fresh fetch, bypass 24h cache
 
-**Key files:**
-- `src/tasks/trade/index.js` - task definition, param parsing, re-auth flow
-- `src/shared/etrade.order.js` - all E*TRADE order ops: `placeBuyOrder()`, `placeSellOrder()`, `cancelBuyOrder()`, `cancelOrder()`, `placeExitOrders()`, `checkCashBalance()`, `getOrderStatus()`, `getPositionQty()`, `refreshPortfolioCache()`
-- `src/tasks/trade/alert.manager.js` - fill monitor (60s cron, disk persistence, `_checkFills`, `_placeFillExits`)
+**Architecture:**
+1. Fetch price + 52w range from `shared/yahoo.service.js` (60s cache)
+2. Fetch 7-day OHLCV via yahoo-finance2 `chart()` for support/resistance
+3. Fetch fundamentals via yahoo-finance2 `quoteSummary` (primary — no key, better international coverage): `assetProfile`, `summaryDetail`, `financialData`, `defaultKeyStatistics`, `recommendationTrend`, `calendarEvents`, `earningsTrend`, `upgradeDowngradeHistory`
+4. Fallback to FMP `/stable/` if Yahoo returns sparse data (<2 of 5 key metrics non-null)
+5. Run Sonnet agent loop (max 4 turns) via `shared/agent.service.js` with scratchpad reasoning
+6. Agent calls `get_news` tool (Google News RSS inline) for sentiment
+7. Agent outputs JSON: score, 4 sub-scores, recommendation, summary, optional `entryPlan`
 
-## Selling (/sell)
+**Entry plan (BUY / STRONG BUY only):** Agent produces `entryPlan` with `entryLow`, `entryHigh`, `takeProfit`, `stopLoss`, `rrRatio`, `notes` based on 7-day OHLCV. Task stays alive in `awaiting_trade` state. User replies `trade 1000` (budget) or `trade qty 14` (shares) to place a GFD BUY LIMIT at golden ratio (`entryLow + range * 0.618`) — same path as `/trade`. Re-auth handled inline.
 
-The `/sell TICKER` command places a single GFD SELL order for an existing position. No TP/SL — one-shot exit.
+**Research caching:** Results cached to `data/research-cache/<SYMBOL>.json` for 24h. Cache hit = instant + $0. `shared/compare.service.js` reuses this same cache for `/research compare` and `/market ideas`.
+
+**Requires:** `ANTHROPIC_API_KEY`. `FMP_API_KEY` optional (fallback). Est. cost: ~$0.05/call.
+
+---
+
+### Trading
+
+#### `/trade` — Buy Orders
+
+**Key files:** `src/tasks/trade/index.js`, `src/tasks/trade/alert.manager.js`, `src/shared/etrade.order.js`
+
+Places a GFD BUY order and monitors for fill to auto-place optional TP/SL exits.
+
+**Commands:**
+- `/trade TICKER` — start a new buy plan
+- `/trade list` — show pending orders with live E*TRADE status
+- `/trade cancel TICKER` — cancel pending BUY on E*TRADE
+- `/trade modify TICKER [tp X] [sl Y]` — cancel old TP/SL and replace; fetches fresh `accountIdKey`, calls `cancelOrder()` + `placeExitOrders()`
+- `/trade history` — last 10 completed trades from `data/trade-history.jsonl`
+- `/trade journal` — export full trade history as CSV via `ctx.sendDocument`
+- `/trade retry-exits TICKER` — retry failed TP/SL from `data/pending-exits/<SYMBOL>-<userId>.json`
+- `/trade track TICKER ORDER_ID qty N [tp X] [sl Y] [limit P]` — recovery: re-register existing order after restart
+- `/trade fill TICKER` — simulate fill (sandbox only), calls `forceTriggerFill()` in alert.manager
+
+**States:** `awaiting_params` → `awaiting_confirmation` → `placing_order` → done (fill monitor takes over)
+
+**Order type:** BUY LIMIT at golden ratio (61.8% of zone), or MARKET. All orders **Good for Day**.
+
+**TP and SL are independently optional.** Fill monitor handles all 4 combinations (both, TP-only, SL-only, neither).
+
+**Fill monitor (`alert.manager.js`):** 60s cron via `node-cron`. Polls `getOrderStatus()`. On EXECUTED: calls `placeExitOrders()` and appends to `trade-history.jsonl`. On CANCELLED/EXPIRED: notifies user with re-entry command. On OPEN at 3:30–3:59 PM ET: sends one-time GFD expiry warning.
+
+**Persistence:** `data/pending-fills.json` written on every change; restored on startup and immediately re-checked. Key: `SYMBOL:userId:buyOrderId`.
+
+**Failed exits:** Saved to `data/pending-exits/<SYMBOL>-<userId>.json` on placement failure.
+
+**Cash check:** `checkCashBalance()` before every BUY — blocks if `cashAvailableForInvestment` < order cost.
+
+**Portfolio cache refresh:** Fire-and-forget after fill+exits, so `/market` P&L stays current.
+
+**Token expiry:** Re-auth handled inline (`awaiting_pin` state) in both `/trade` and `/research` inline trade. Plan data preserved in task state.
+
+---
+
+#### `/sell` — Sell Orders
+
+**Key file:** `src/tasks/sell/index.js`
+
+Places a single GFD SELL order for an existing position. No TP/SL — one-shot exit.
+
+**Commands:** `/sell TICKER` (alias `/s`)
 
 **Plan syntax** (send after `/sell TICKER`):
 ```
 sell <qty> <price>     ← limit sell, GFD
 sell <qty> market      ← market sell
-sell all <price>       ← sell full position (fetches qty from E*TRADE), limit GFD
+sell all <price>       ← sell full position at limit (auto-fetches qty)
 sell all market        ← sell full position at market
 ```
 
-**Flow:**
-1. `/sell UBER` — prompt for sell plan
-2. Enter plan (e.g. `sell 50 85.00` or `sell all market`)
-3. Review shown → reply `confirm` to place, `edit` to revise
-4. `sell all`: calls `getPositionQty(symbol)` to fetch current position from E*TRADE; errors if not found
-5. Re-auth handled inline if token expired
+**States:** `awaiting_params` → `awaiting_confirmation` → `placing_order` → done
 
-**Key file:** `src/tasks/sell/index.js`
+**`sell all`:** calls `getPositionQty(symbol)` from `shared/etrade.order.js` to fetch current position size from E*TRADE; errors if position not found.
 
-## Bot Development (/dev)
+**Re-auth:** 401 on order placement triggers `startReAuth(ctx, ...)` from `shared/reauth.js`.
 
-The `/dev` command delegates codebase questions and code changes to the locally-installed Claude Code CLI — zero API cost, uses the Claude Pro subscription from `~/.claude/`.
+---
 
-**Handles two kinds of requests:**
+### `/dev` — Bot Development
 
-- **Questions** — "how does X work?", "why does Y do Z?" — answered immediately, no confirmation loop
-- **Build tasks** — "add X", "fix Y", "refactor Z" — two-phase plan → implement flow
+**Key file:** `src/tasks/dev/index.js`
+
+Delegates codebase questions and code changes to the locally-installed Claude Code CLI. Zero API cost — uses Claude Pro subscription from `~/.claude/`.
+
+**Two request types:**
+- **Questions** (`[ANSWER]` marker) — answered immediately, no confirmation loop
+- **Build tasks** (`[PLAN]` marker) — two-phase plan → implement flow
 
 **Flow (build tasks):**
-1. `/dev add a /weather command using wttr.in`
-2. Claude Code reads the codebase and outputs a plan (no file writes)
-3. User replies `confirm`, `update: <feedback>` (revise plan), or `discard`
-4. On confirm: Claude Code implements in a git worktree under `/tmp/` (outside project dir, never watched by nodemon)
-5. Diff stat shown — user replies `confirm` to apply or `discard` to cancel
-6. On confirm: `git merge` writes to `src/` → nodemon detects change → bot restarts with new code
+1. Claude Code reads codebase, outputs plan (no file writes yet)
+2. User replies `confirm`, `update: <feedback>`, or `discard`
+3. On confirm: implementation runs in git worktree under `/tmp/` (outside `src/`, never watched by nodemon)
+4. Diff stat shown — `confirm` to merge (nodemon restarts), `discard` to cancel
 
-**Intent detection:** Claude Code self-classifies its response with `[ANSWER]` (Q&A) or `[PLAN]` (build task). Bot branches on this marker — Q&A completes immediately, build tasks enter the confirmation loop.
+**Intent detection:** Claude Code self-classifies with `[ANSWER]` or `[PLAN]` tag. Bot branches on this marker.
 
 **Key design decisions:**
-- Worktree in `/tmp/` — nodemon never watches it, so file writes during implementation don't restart the bot mid-execution
-- `ANTHROPIC_API_KEY` is stripped from the subprocess env — Claude Code uses `~/.claude/` Pro subscription credentials, not the bot's API key
-- `stdin` closed (`ignore`) — prevents Claude Code from blocking on any interactive prompt
-
-**Key files:**
-- `src/tasks/dev/index.js` - full task implementation (planning, Q&A detection, implementation, git ops)
+- Worktree in `/tmp/` — nodemon never watches it during implementation
+- `ANTHROPIC_API_KEY` stripped from subprocess env — Claude Code uses `~/.claude/` Pro credentials
+- `stdin` set to `ignore` — prevents blocking on any interactive prompt
 
 **Requires:** Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`) and authenticated via `claude` in terminal.
 
