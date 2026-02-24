@@ -1,16 +1,16 @@
 /**
- * Order Service
+ * E*TRADE Order Service (shared)
  *
  * Wraps ETradeService with order-specific helpers.
  * Orders are placed in two stages:
- *   1. placeBuyOrder()   — limit BUY only (GTC)
+ *   1. placeBuyOrder()   — limit BUY only (GFD by default)
  *   2. placeExitOrders() — TP + SL, called only after BUY is confirmed EXECUTED
  */
 
 import crypto from 'crypto';
-import logger from '../../utils/logger.js';
-import { getAuthenticatedService } from '../../shared/etrade.helper.js';
-import { savePortfolioCache } from '../market/cache.service.js';
+import logger from '../utils/logger.js';
+import { getAuthenticatedService } from './etrade.helper.js';
+import { savePortfolioCache } from '../tasks/market/cache.service.js';
 
 export { getAuthenticatedService };
 

@@ -23,7 +23,7 @@
 import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
 import logger from '../../utils/logger.js';
 import { fetchStockQuote } from '../market/sector.service.js';
-import { placeBuyOrder, calcQty, checkCashBalance, cancelBuyOrder, getOrderStatus, getAuthenticatedService, getFirstBrokerageAccount } from './order.service.js';
+import { placeBuyOrder, calcQty, checkCashBalance, cancelBuyOrder, getOrderStatus, getAuthenticatedService, getFirstBrokerageAccount } from '../../shared/etrade.order.js';
 import {
   addPendingFill,
   removePendingFill,

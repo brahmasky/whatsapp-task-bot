@@ -9,7 +9,7 @@ import logger from '../../utils/logger.js';
 import { fetchFundamentals } from './fundamentals.service.js';
 import { runResearchAgent } from './agent.service.js';
 import { addPendingFill } from '../trade/alert.manager.js';
-import { placeBuyOrder, calcQty, checkCashBalance, refreshPortfolioCache } from '../trade/order.service.js';
+import { placeBuyOrder, calcQty, checkCashBalance, refreshPortfolioCache } from '../../shared/etrade.order.js';
 import { startAuthFlow, exchangePin, cleanupAuthFlow } from '../../shared/auth.service.js';
 import config from '../../config/index.js';
 

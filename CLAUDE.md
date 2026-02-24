@@ -165,13 +165,15 @@ No test or lint scripts are configured.
 | Yahoo Finance quotes | `shared/yahoo.service.js` | Any price fetch — `fetchQuote(symbol)`, 60s cache, never throws |
 | Claude agent loop | `shared/agent.service.js` | Any agentic tool-use loop — `runAgentLoop({model, system, messages, tools, maxIterations, maxTokens, executeTool, onToolCall?, onTurnText?})` |
 | E*TRADE auth | `shared/etrade.helper.js` | Get authenticated service — `getAuthenticatedService()`, loads tokens from keychain |
+| E*TRADE orders | `shared/etrade.order.js` | All order ops — `placeBuyOrder()`, `cancelBuyOrder()`, `placeExitOrders()`, `getOrderStatus()`, `checkCashBalance()`, `refreshPortfolioCache()`, `calcQty()`, `getFirstBrokerageAccount()` |
 | OAuth flow | `shared/auth.service.js` | PIN-based OAuth for E*TRADE — `startAuthFlow(userId)`, `exchangePin(userId, pin)`, `cleanupAuthFlow(userId)` |
 | News fetching | `tasks/portfolio/news.service.js` | Google News RSS — `fetchMarketNews([symbols], maxSymbols)` |
 
 **New task checklist — before writing any fetch or loop code:**
 - Fetching a stock price? → `shared/yahoo.service.js`
 - Running a Claude agent with tools? → `shared/agent.service.js`
-- Talking to E*TRADE API? → `shared/etrade.helper.js`
+- Talking to E*TRADE API (auth)? → `shared/etrade.helper.js`
+- Placing/cancelling E*TRADE orders? → `shared/etrade.order.js`
 - Running E*TRADE OAuth? → `shared/auth.service.js`
 - Fetching news? → `tasks/portfolio/news.service.js`
 
@@ -331,7 +333,7 @@ The `/trade TICKER` command places a GFD BUY LIMIT order immediately and monitor
 
 **Key files:**
 - `src/tasks/trade/index.js` - task definition, param parsing, re-auth flow
-- `src/tasks/trade/order.service.js` - `placeBuyOrder()`, `cancelBuyOrder()`, `checkCashBalance()`, `getOrderStatus()`, `refreshPortfolioCache()`
+- `src/shared/etrade.order.js` - all E*TRADE order ops: `placeBuyOrder()`, `cancelBuyOrder()`, `placeExitOrders()`, `checkCashBalance()`, `getOrderStatus()`, `refreshPortfolioCache()`
 - `src/tasks/trade/alert.manager.js` - fill monitor (60s cron, disk persistence, `_checkFills`, `_placeFillExits`)
 
 ## Bot Development (/dev)

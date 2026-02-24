@@ -21,7 +21,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import cron from 'node-cron';
 import logger from '../../utils/logger.js';
-import { getOrderStatus, placeExitOrders, refreshPortfolioCache } from './order.service.js';
+import { getOrderStatus, placeExitOrders, refreshPortfolioCache } from '../../shared/etrade.order.js';
 import config from '../../config/index.js';
 
 const FILLS_FILE = path.resolve(
