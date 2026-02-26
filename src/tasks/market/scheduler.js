@@ -4,17 +4,50 @@
  * Handles scheduled market updates:
  * - Post-market: 4:30 PM ET on market days
  * - Weekly: 9:00 AM ET on Saturdays
+ *
+ * Uses setInterval polling (every 30s) instead of node-cron to avoid a timing
+ * precision bug in node-cron v4: its heartbeat uses exact-second matching
+ * (second === 0 for 5-field expressions). When the heartbeat fires even 1s
+ * late, the match fails and the next execution is scheduled 24h later —
+ * silently dropping the update. Polling every 30s gives a 60-second window to
+ * catch the target minute, which is robust against normal timer drift.
  */
 
-import cron from 'node-cron';
-import { isMarketDay, isWeekend, getEasternTime } from './calendar.js';
+import { isMarketDay, getEasternTime, formatDate } from './calendar.js';
 import { generateMarketUpdate } from './index.js';
 import logger from '../../utils/logger.js';
 
-let scheduledJobs = [];
+let schedulerInterval = null;
 let sendFunction = null;
 let targetUserId = null;
 let isReadyFn = () => true;
+
+// Track the last ET date (YYYY-MM-DD) each update type was fired to prevent
+// duplicate executions within the same minute (interval fires every 30s).
+const lastFired = {};
+
+/**
+ * Get current ET hour, minute, and weekday.
+ */
+function getETNow() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'long',
+    hour12: false,
+  }).formatToParts(now).reduce((acc, p) => {
+    if (p.type !== 'literal') acc[p.type] = p.value;
+    return acc;
+  }, {});
+  return {
+    hour: parseInt(parts.hour) % 24,
+    minute: parseInt(parts.minute),
+    weekday: parts.weekday,
+    now,
+  };
+}
 
 /**
  * Wait for the messaging channel to become ready, polling every 5s.
@@ -42,24 +75,25 @@ export function initScheduler(send, userId, isReady = () => true) {
   targetUserId = userId;
   isReadyFn = isReady;
 
-  // Clear any existing jobs
+  // Clear any existing interval
   stopScheduler();
 
-  // Post-market: 4:30 PM ET, Mon-Fri
-  const postMarketJob = cron.schedule('30 16 * * 1-5', async () => {
-    await runScheduledUpdate('post-market');
-  }, {
-    timezone: 'America/New_York',
-  });
-  scheduledJobs.push(postMarketJob);
+  schedulerInterval = setInterval(() => {
+    const { hour, minute, weekday, now } = getETNow();
+    const dateStr = formatDate(now); // YYYY-MM-DD in ET — dedup key
 
-  // Weekly summary: 9:00 AM ET, Saturday
-  const weeklyJob = cron.schedule('0 9 * * 6', async () => {
-    await runScheduledUpdate('weekly');
-  }, {
-    timezone: 'America/New_York',
-  });
-  scheduledJobs.push(weeklyJob);
+    // Post-market: 4:30 PM ET, Mon-Fri (market days only)
+    if (hour === 16 && minute === 30 && isMarketDay(now) && lastFired['post-market'] !== dateStr) {
+      lastFired['post-market'] = dateStr;
+      runScheduledUpdate('post-market');
+    }
+
+    // Weekly: 9:00 AM ET, Saturday
+    if (hour === 9 && minute === 0 && weekday === 'Saturday' && lastFired['weekly'] !== dateStr) {
+      lastFired['weekly'] = dateStr;
+      runScheduledUpdate('weekly');
+    }
+  }, 30_000);
 
   logger.info('Market update scheduler initialized');
   logger.info('  Post-market: 4:30 PM ET, Mon-Fri');
@@ -70,16 +104,8 @@ export function initScheduler(send, userId, isReady = () => true) {
  * Run a scheduled update
  */
 async function runScheduledUpdate(updateType) {
-  // Log first — before any early-return checks — so we can confirm the cron tick fired
-  logger.info(`Scheduled cron tick: ${updateType}`);
-
-  const now = getEasternTime();
-
-  // Skip post-market on non-market days
-  if (updateType === 'post-market' && !isMarketDay(now)) {
-    logger.info(`Skipping ${updateType} update - market closed`);
-    return;
-  }
+  // Log first — before any early-return checks — so we can confirm the tick fired
+  logger.info(`Scheduled tick: ${updateType}`);
 
   if (!sendFunction || !targetUserId) {
     logger.warn(`Cannot send ${updateType} update - no send function configured`);
@@ -92,7 +118,6 @@ async function runScheduledUpdate(updateType) {
     const message = await generateMarketUpdate(updateType);
 
     // Ensure the channel is connected before sending — it may have briefly dropped
-    // (e.g. WhatsApp disconnecting at the exact cron tick time)
     const ready = await waitForReady();
     if (!ready) {
       logger.error(`${updateType} update generated but channel not ready after 2 min — discarding`);
@@ -112,13 +137,13 @@ async function runScheduledUpdate(updateType) {
 }
 
 /**
- * Stop all scheduled jobs
+ * Stop the scheduler interval
  */
 export function stopScheduler() {
-  for (const job of scheduledJobs) {
-    job.stop();
+  if (schedulerInterval) {
+    clearInterval(schedulerInterval);
+    schedulerInterval = null;
   }
-  scheduledJobs = [];
   logger.info('Market update scheduler stopped');
 }
 
@@ -127,8 +152,8 @@ export function stopScheduler() {
  */
 export function getSchedulerStatus() {
   return {
-    active: scheduledJobs.length > 0,
-    jobs: scheduledJobs.length,
+    active: !!schedulerInterval,
+    jobs: schedulerInterval ? 2 : 0, // post-market + weekly
     targetUser: targetUserId,
     nextRuns: getNextRunTimes(),
   };
@@ -212,34 +237,26 @@ export async function sendSchedulerPing() {
   await sendFunction({
     type: 'text',
     userId: targetUserId,
-    text: `🔔 Scheduler ping test\ntargetUserId: ${targetUserId}\ntime: ${new Date().toISOString()}`,
+    text: `Scheduler ping test\ntargetUserId: ${targetUserId}\ntime: ${new Date().toISOString()}`,
   });
 }
 
 /**
- * Register a one-time cron job that fires in N minutes and sends a ping.
- * Used to verify cron is actually triggering on this machine.
+ * Schedule a one-time test ping in N minutes.
+ * Used to verify the send path is working on this machine.
  */
 export function scheduleTestIn(minutes = 3) {
   const fireAt = new Date(Date.now() + minutes * 60 * 1000);
-  const m = fireAt.getUTCMinutes();
-  const h = fireAt.getUTCHours();
-  const d = fireAt.getUTCDate();
-  const mon = fireAt.getUTCMonth() + 1;
-
-  const pattern = `${m} ${h} ${d} ${mon} *`;
-  logger.info(`Scheduling test cron at UTC ${h}:${String(m).padStart(2, '0')} (in ~${minutes} min), pattern: ${pattern}`);
-
-  const testJob = cron.schedule(pattern, async () => {
-    logger.info('Test cron job fired!');
+  logger.info(`Scheduling test ping in ~${minutes} min (at ${fireAt.toISOString()})`);
+  setTimeout(async () => {
+    logger.info('Test timer fired!');
     try {
       await sendSchedulerPing();
       logger.info('Test ping sent successfully');
     } catch (err) {
       logger.error('Test ping failed:', err.message);
     }
-    testJob.stop();
-  }, { timezone: 'UTC' }); // pattern is in UTC
+  }, minutes * 60 * 1000);
 }
 
 export default {

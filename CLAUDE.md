@@ -25,7 +25,7 @@ No test or lint scripts are configured.
 
 ┌─────────────────┐                              ┌─────────────────┐
 │    WhatsApp     │                              │    Scheduler    │
-│     User        │                              │   (node-cron)   │
+│     User        │                              │  (setInterval)  │
 └────────┬────────┘                              └────────┬────────┘
          │                                                │
          ▼                                                │
@@ -346,6 +346,8 @@ Sector rotation analysis with portfolio context. Runs on a cron schedule and on 
 **Scheduled updates** (market days only):
 - Post-market: 4:30 PM ET
 - Weekly summary: 9:00 AM ET on Saturdays
+
+**Scheduler implementation note:** Uses `setInterval` polling every 30s instead of node-cron. node-cron v4 requires exact-second matching (second === 0 for 5-field expressions) — if the heartbeat fires 1s late, it misses the tick and reschedules 24h later, silently dropping the update. The 30s polling approach gives a 60-second window to catch the target minute and is immune to normal timer drift. Dedup via `lastFired` dict (keyed by ET date string) prevents double-firing within the same minute.
 
 **Adaptive analysis tiers:**
 | Level | Trigger | Model | Tools | Cost |
