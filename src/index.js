@@ -12,7 +12,7 @@ import invoiceTask from './tasks/invoice/index.js';
 import systemTask from './tasks/system/index.js';
 import portfolioTask from './tasks/portfolio/index.js';
 import marketTask, { initScheduler } from './tasks/market/index.js';
-import { stopScheduler } from './tasks/market/scheduler.js';
+import { stopScheduler, setTargetUser } from './tasks/market/scheduler.js';
 import researchTask from './tasks/research/index.js';
 import tradeTask, { initAlertMonitor, stopAlertMonitor } from './tasks/trade/index.js';
 import devTask from './tasks/dev/index.js';
@@ -54,6 +54,20 @@ async function main() {
       logger.error('Error handling message:', { error: error.message });
     }
   });
+
+  // Capture the actual JID of the primary user from their first self-message.
+  // The scheduler is initialized with a @s.whatsapp.net JID constructed from
+  // ALLOWED_USERS, but newer multi-device WhatsApp uses @lid JIDs that don't
+  // match. Updating on first self-message ensures scheduled sends use the
+  // correct JID going forward.
+  const onFirstSelfMessage = (message) => {
+    if (message.fromMe && schedulerUserId) {
+      setTargetUser(message.userId);
+      gateway.off('message', onFirstSelfMessage);
+    }
+  };
+  gateway.off('message', onFirstSelfMessage); // no-op guard
+  gateway.on('message', onFirstSelfMessage);
 
   // Setup periodic cleanup of stale tasks (every 5 minutes)
   const cleanupIntervalMs = 5 * 60 * 1000;

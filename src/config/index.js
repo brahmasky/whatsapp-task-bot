@@ -36,8 +36,11 @@ const config = {
 
   // Bot settings
   bot: {
-    // Comma-separated list of allowed phone numbers (without +)
-    // If empty, only responds to self-messages
+    // Comma-separated list of allowed user IDs.
+    // Can be phone numbers (e.g. 61423001320) for @s.whatsapp.net JIDs,
+    // or Linked Device IDs (e.g. 164939780124736) for @lid JIDs.
+    // Check logs for "Rejected message from unauthorized user" to find the correct ID.
+    // If empty, only responds to self-messages.
     allowedUsers: process.env.ALLOWED_USERS
       ? process.env.ALLOWED_USERS.split(',').map(u => u.trim())
       : [],

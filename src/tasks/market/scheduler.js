@@ -105,7 +105,7 @@ export function initScheduler(send, userId, isReady = () => true) {
  */
 async function runScheduledUpdate(updateType) {
   // Log first — before any early-return checks — so we can confirm the tick fired
-  logger.info(`Scheduled tick: ${updateType}`);
+  logger.info(`Scheduled tick: ${updateType} → ${targetUserId}`);
 
   if (!sendFunction || !targetUserId) {
     logger.warn(`Cannot send ${updateType} update - no send function configured`);
@@ -217,6 +217,20 @@ function getNextRunTimes() {
   if (nextWeekly) times.push({ type: 'weekly', time: nextWeekly.toISOString() });
 
   return times;
+}
+
+/**
+ * Update the target user JID for scheduled sends.
+ * Called when the actual JID is learned from an incoming message — the JID
+ * constructed at startup from ALLOWED_USERS uses @s.whatsapp.net but in
+ * newer multi-device WhatsApp the user's real JID is @lid, which is what
+ * actually routes correctly.
+ */
+export function setTargetUser(userId) {
+  if (userId && userId !== targetUserId) {
+    logger.info(`Scheduler target updated: ${targetUserId} → ${userId}`);
+    targetUserId = userId;
+  }
 }
 
 /**

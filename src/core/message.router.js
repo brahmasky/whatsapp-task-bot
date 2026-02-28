@@ -57,7 +57,7 @@ class MessageRouter {
 
     // Check if user is allowed
     if (!this.isAllowedUser(message)) {
-      logger.debug(`Ignoring message from unauthorized user: ${userId}`);
+      logger.warn(`Rejected message from unauthorized user: ${userId}`);
       return;
     }
 
