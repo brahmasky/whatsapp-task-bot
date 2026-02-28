@@ -194,6 +194,8 @@ Sector rotation analysis with portfolio context. Runs automatically on a schedul
 - **Post-market:** 4:30 PM ET
 - **Weekly summary:** 9:00 AM ET on Saturdays
 
+Scheduled messages are sent to the "Message yourself" chat. The target JID is learned from the first self-message received after startup and persisted to `data/scheduler-target-user.json` — no reconfiguration needed after restarts.
+
 **Adaptive analysis tiers** — cost scales with market significance:
 
 | Level | Trigger | Model | Tools | Est. Cost |

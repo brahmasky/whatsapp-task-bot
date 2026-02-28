@@ -349,6 +349,8 @@ Sector rotation analysis with portfolio context. Runs on a cron schedule and on 
 
 **Scheduler implementation note:** Uses `setInterval` polling every 30s instead of node-cron. node-cron v4 requires exact-second matching (second === 0 for 5-field expressions) — if the heartbeat fires 1s late, it misses the tick and reschedules 24h later, silently dropping the update. The 30s polling approach gives a 60-second window to catch the target minute and is immune to normal timer drift. Dedup via `lastFired` dict (keyed by ET date string) prevents double-firing within the same minute.
 
+**Scheduler target JID:** At startup, `schedulerUserId` is constructed from `ALLOWED_USERS[0]` as a `@s.whatsapp.net` JID. Newer multi-device WhatsApp uses `@lid` JIDs that route correctly to the "Message yourself" chat; `@s.whatsapp.net` may land in a different chat. Fix: `index.js` registers a one-time `onFirstSelfMessage` listener that calls `setTargetUser(message.userId)` with the real `@lid` JID on the first self-message received. `setTargetUser` persists the JID to `data/scheduler-target-user.json`; `initScheduler` restores it on startup so the correct target survives restarts without needing a new self-message.
+
 **Adaptive analysis tiers:**
 | Level | Trigger | Model | Tools | Cost |
 |-------|---------|-------|-------|------|
