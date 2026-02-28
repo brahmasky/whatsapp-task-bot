@@ -16,6 +16,7 @@
 import { isMarketDay, getEasternTime, formatDate } from './calendar.js';
 import { generateMarketUpdate } from './index.js';
 import logger from '../../utils/logger.js';
+import { load, save } from '../../utils/persistence.service.js';
 
 let schedulerInterval = null;
 let sendFunction = null;
@@ -72,8 +73,15 @@ async function waitForReady(timeoutMs = 120_000) {
  */
 export function initScheduler(send, userId, isReady = () => true) {
   sendFunction = send;
-  targetUserId = userId;
   isReadyFn = isReady;
+
+  // Use a previously-learned real JID if available; otherwise fall back to the
+  // @s.whatsapp.net placeholder constructed from ALLOWED_USERS at startup.
+  const saved = load('scheduler-target-user');
+  targetUserId = saved?.userId ?? userId;
+  if (saved?.userId) {
+    logger.info(`Scheduler target restored from disk: ${targetUserId}`);
+  }
 
   // Clear any existing interval
   stopScheduler();
@@ -230,6 +238,7 @@ export function setTargetUser(userId) {
   if (userId && userId !== targetUserId) {
     logger.info(`Scheduler target updated: ${targetUserId} → ${userId}`);
     targetUserId = userId;
+    save('scheduler-target-user', { userId });
   }
 }
 
