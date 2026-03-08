@@ -61,8 +61,9 @@ async function main() {
   // match. Updating on first self-message ensures scheduled sends use the
   // correct JID going forward.
   const onFirstSelfMessage = (message) => {
-    if (message.fromMe && schedulerUserId) {
-      setTargetUser(message.userId);
+    if (message.fromMe) {
+      router.setSelfJid(message.userId);
+      if (schedulerUserId) setTargetUser(message.userId);
       gateway.off('message', onFirstSelfMessage);
     }
   };

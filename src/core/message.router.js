@@ -3,6 +3,7 @@ import stateManager from './state.manager.js';
 import taskRegistry from './task.registry.js';
 import config from '../config/index.js';
 import { getPendingFillsCount } from '../tasks/trade/alert.manager.js';
+import { load } from '../utils/persistence.service.js';
 
 const COMMAND_ALIASES = { '/r': '/research', '/t': '/trade', '/m': '/market', '/p': '/portfolio', '/s': '/sell' };
 
@@ -17,6 +18,18 @@ const COMMAND_ALIASES = { '/r': '/research', '/t': '/trade', '/m': '/market', '/
 class MessageRouter {
   constructor(gateway) {
     this.gateway = gateway;
+    // Load the persisted @lid self JID so fromMe auth works across restarts.
+    // Updated at runtime via setSelfJid() when the first self-message arrives.
+    const saved = load('scheduler-target-user');
+    this.selfLidJid = saved?.userId ?? null;
+  }
+
+  /**
+   * Update the known self JID. Called when the first self-message arrives so
+   * we learn the real @lid JID (not the @s.whatsapp.net placeholder).
+   */
+  setSelfJid(userId) {
+    this.selfLidJid = userId;
   }
 
   /**
@@ -25,21 +38,24 @@ class MessageRouter {
    * @returns {boolean}
    */
   isAllowedUser(message) {
-    // Always allow self-messages
+    // Extract the phone/LID part from userId (format: whatsapp:NUMBER@suffix)
+    const platformUserId = message.userId.split(':')[1] || message.userId;
+    const phoneNumber = platformUserId.split('@')[0];
+
     if (message.fromMe) {
-      return true;
+      // Only process self-messages sent TO the user's own chat, not to other contacts.
+      // The recipient JID must match either the primary user's phone number
+      // (@s.whatsapp.net case) or the known @lid self JID.
+      if (config.bot.allowedUsers.includes(phoneNumber)) return true;
+      if (this.selfLidJid && message.userId === this.selfLidJid) return true;
+      return false;
     }
 
-    // Check allowed users list
+    // Non-self messages: check against allowed users list
     if (config.bot.allowedUsers.length > 0) {
-      // Extract phone number from the platform-specific part of userId
-      // Format: whatsapp:123456@s.whatsapp.net → 123456
-      const platformUserId = message.userId.split(':')[1] || message.userId;
-      const phoneNumber = platformUserId.split('@')[0];
       return config.bot.allowedUsers.includes(phoneNumber);
     }
 
-    // Default: only self-messages allowed
     return false;
   }
 
