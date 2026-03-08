@@ -154,7 +154,7 @@ function runImplementationPhase(instruction, plan, worktreePath, onProgress) {
   return new Promise((resolve, reject) => {
     const proc = spawn(
       claudeBin,
-      ['-p', prompt, '--dangerously-skip-permissions', '--output-format', 'stream-json'],
+      ['-p', prompt, '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose'],
       { cwd: worktreePath, env: claudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] }
     );
 
