@@ -17,15 +17,43 @@
  *
  * Intent detection: the planning prompt asks Claude Code to end its response with
  * [ANSWER] (Q&A) or [PLAN] (build task). The bot branches on this marker.
+ *
+ * Session scratchpad (DEV_SESSION.md at project root, gitignored):
+ *   /dev session: <notes>  — set session context (replaces any existing notes)
+ *   /dev session clear     — clear session notes
+ *   /dev session show      — show current notes
+ *   All /dev runs automatically prepend session notes to the Claude Code prompt.
+ *
+ * In-session continuation:
+ *   After a confirmed implementation, the task stays alive in `awaiting_followup`.
+ *   Send the next instruction directly (no /dev prefix needed) to continue.
+ *   The full history of completed steps is passed to each subsequent Claude Code run.
+ *   Send `done` to end the session.
  */
 
 import { spawn, execFileSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from '../../utils/logger.js';
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const SESSION_FILE = path.join(PROJECT_ROOT, 'DEV_SESSION.md');
 const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per phase
+
+// ─── Session scratchpad ───────────────────────────────────────────────────────
+
+function loadSessionNotes() {
+  try { return fs.readFileSync(SESSION_FILE, 'utf-8').trim() || null; } catch { return null; }
+}
+
+function saveSessionNotes(text) {
+  fs.writeFileSync(SESSION_FILE, text, 'utf-8');
+}
+
+function clearSessionNotes() {
+  try { fs.unlinkSync(SESSION_FILE); } catch {}
+}
 
 // ─── Git helper ───────────────────────────────────────────────────────────────
 
@@ -54,14 +82,26 @@ function claudeEnv() {
   return env;
 }
 
-// ─── Phase 1: Planning (--output-format json, no file writes) ────────────────
+// ─── Prompt builders ──────────────────────────────────────────────────────────
 
-const PLAN_PROMPT_TEMPLATE = (instruction, feedback) => {
-  const feedbackSection = feedback
-    ? `\n\nUser feedback on the previous response:\n${feedback}`
-    : '';
+function buildPlanPrompt(instruction, { sessionNotes = null, feedback = null, history = [] } = {}) {
+  const parts = [];
 
-  return (
+  if (sessionNotes) {
+    parts.push(`Session context (set by the user for this working session):\n${sessionNotes}`);
+  }
+
+  if (history.length > 0) {
+    parts.push(
+      `Steps already completed in this /dev session:\n` +
+      history.map((s, i) => `${i + 1}. ${s}`).join('\n') +
+      `\n\nThe code changes from those steps are already committed and visible in the codebase.`
+    );
+  }
+
+  const feedbackSection = feedback ? `\n\nUser feedback on the previous response:\n${feedback}` : '';
+
+  parts.push(
     `You are helping with a WhatsApp bot codebase. Read the request below and decide if it is ` +
     `a question/investigation or a build task requiring code changes.\n\n` +
     `Request: "${instruction}"${feedbackSection}\n\n` +
@@ -76,16 +116,42 @@ const PLAN_PROMPT_TEMPLATE = (instruction, feedback) => {
     `End your response with exactly: [PLAN]\n\n` +
     `Do NOT write, create, or modify any files. Output text only.`
   );
-};
+
+  return parts.join('\n\n');
+}
+
+function buildImplPrompt(instruction, plan, { sessionNotes = null, history = [] } = {}) {
+  const parts = [];
+
+  if (sessionNotes) {
+    parts.push(`Session context:\n${sessionNotes}`);
+  }
+
+  if (history.length > 0) {
+    parts.push(
+      `Steps already completed in this /dev session (already committed):\n` +
+      history.map((s, i) => `${i + 1}. ${s}`).join('\n')
+    );
+  }
+
+  parts.push(
+    `Implement the following task exactly as described in the approved plan below.\n\n` +
+    `Task: "${instruction}"\n\n` +
+    `Approved plan:\n${plan}`
+  );
+
+  return parts.join('\n\n');
+}
+
+// ─── Phase 1: Planning (output-format text, no file writes) ──────────────────
 
 /**
  * Run Claude Code in planning mode: reads files, outputs a plan, writes nothing.
- * Uses --output-format json so we get a clean result field.
- * onProgress() is called every 60 s while the process is running.
+ * onProgress() is called every 60s while the process is running.
  */
-function runPlanningPhase(instruction, worktreePath, feedback = null, onProgress = null) {
+function runPlanningPhase(instruction, worktreePath, context = {}, onProgress = null) {
   const claudeBin = findClaudeBin();
-  const prompt = PLAN_PROMPT_TEMPLATE(instruction, feedback);
+  const prompt = buildPlanPrompt(instruction, context);
 
   return new Promise((resolve, reject) => {
     logger.info(`/dev: spawning Claude Code (planning) in ${worktreePath}`);
@@ -138,18 +204,15 @@ function runPlanningPhase(instruction, worktreePath, feedback = null, onProgress
   });
 }
 
-// ─── Phase 2: Implementation (--output-format stream-json, writes allowed) ───
+// ─── Phase 2: Implementation (stream-json, writes allowed) ───────────────────
 
 /**
  * Run Claude Code in implementation mode: executes the plan, writes files.
  * Streams events so we can send periodic progress pings to the user.
  */
-function runImplementationPhase(instruction, plan, worktreePath, onProgress) {
+function runImplementationPhase(instruction, plan, worktreePath, context = {}, onProgress) {
   const claudeBin = findClaudeBin();
-  const prompt =
-    `Implement the following task exactly as described in the approved plan below.\n\n` +
-    `Task: "${instruction}"\n\n` +
-    `Approved plan:\n${plan}`;
+  const prompt = buildImplPrompt(instruction, plan, context);
 
   return new Promise((resolve, reject) => {
     const proc = spawn(
@@ -237,13 +300,27 @@ function cleanupWorktree({ worktreePath, branchName } = {}) {
   if (branchName) deleteBranch(branchName);
 }
 
+// ─── Shared: run planning and return { cleanResponse, isAnswer } ──────────────
+
+async function runPlanning(instruction, worktreePath, context, replyFn) {
+  const response = await runPlanningPhase(instruction, worktreePath, context, async () => {
+    await replyFn('Still analyzing...');
+  });
+  const isAnswer = response.includes('[ANSWER]');
+  const cleanResponse = response.replace(/\[(ANSWER|PLAN)\]\s*$/i, '').trim();
+  return { isAnswer, cleanResponse };
+}
+
 // ─── Implementation runner (called after plan confirmed) ──────────────────────
 
-async function executeImplementation(ctx, { instruction, plan, worktreePath, branchName }) {
-  await ctx.reply('⚙️ Implementing... (progress updates every 60 s if active)');
+async function executeImplementation(ctx, { instruction, plan, worktreePath, branchName, completedSteps = [] }) {
+  const sessionNotes = loadSessionNotes();
+  const context = { sessionNotes, history: completedSteps };
+
+  await ctx.reply('Implementing... (progress updates every 60s if active)');
 
   try {
-    await runImplementationPhase(instruction, plan, worktreePath, async ({ filesRead, filesWritten, lastAction }) => {
+    await runImplementationPhase(instruction, plan, worktreePath, context, async ({ filesRead, filesWritten, lastAction }) => {
       const parts = [`Still working... (read ${filesRead} file${filesRead !== 1 ? 's' : ''}`];
       if (filesWritten > 0) {
         parts.push(`, wrote ${filesWritten}`);
@@ -255,8 +332,14 @@ async function executeImplementation(ctx, { instruction, plan, worktreePath, bra
   } catch (err) {
     logger.error(`/dev: implementation failed: ${err.message}`);
     cleanupWorktree({ worktreePath, branchName });
-    await ctx.reply(`❌ Implementation failed: ${err.message}`);
-    ctx.completeTask();
+    await ctx.reply(`Implementation failed: ${err.message}`);
+    // Return to followup if there's history, else end the task
+    if (completedSteps.length > 0) {
+      ctx.updateTask('awaiting_followup', { completedSteps });
+      await ctx.reply('Reply with another instruction or `done` to finish the session.');
+    } else {
+      ctx.completeTask();
+    }
     return;
   }
 
@@ -267,7 +350,12 @@ async function executeImplementation(ctx, { instruction, plan, worktreePath, bra
   if (!porcelain) {
     cleanupWorktree({ worktreePath, branchName });
     await ctx.reply('Claude Code ran but made no file changes.');
-    ctx.completeTask();
+    if (completedSteps.length > 0) {
+      ctx.updateTask('awaiting_followup', { completedSteps });
+      await ctx.reply('Reply with another instruction or `done` to finish the session.');
+    } else {
+      ctx.completeTask();
+    }
     return;
   }
 
@@ -278,8 +366,13 @@ async function executeImplementation(ctx, { instruction, plan, worktreePath, bra
   } catch (err) {
     logger.error(`/dev: commit failed: ${err.message}`);
     cleanupWorktree({ worktreePath, branchName });
-    await ctx.reply(`❌ Failed to commit changes: ${err.message}`);
-    ctx.completeTask();
+    await ctx.reply(`Failed to commit changes: ${err.message}`);
+    if (completedSteps.length > 0) {
+      ctx.updateTask('awaiting_followup', { completedSteps });
+      await ctx.reply('Reply with another instruction or `done` to finish the session.');
+    } else {
+      ctx.completeTask();
+    }
     return;
   }
 
@@ -287,11 +380,58 @@ async function executeImplementation(ctx, { instruction, plan, worktreePath, bra
   let diffStat = '(could not compute diff)';
   try { diffStat = git(['diff', `HEAD..${branchName}`, '--stat']); } catch {}
 
-  ctx.updateTask('awaiting_confirmation', { worktreePath, branchName, instruction });
+  ctx.updateTask('awaiting_confirmation', { worktreePath, branchName, instruction, completedSteps });
   await ctx.reply(
-    `✅ Done.\n\nChanges:\n${diffStat}\n\n` +
+    `Done.\n\nChanges:\n${diffStat}\n\n` +
     `Reply \`confirm\` to apply + commit, or \`discard\` to cancel.`
   );
+}
+
+// ─── Shared: start a new planning iteration ───────────────────────────────────
+
+async function startIteration(ctx, instruction, completedSteps = []) {
+  const timestamp = Date.now();
+  const branchName = `dev-${timestamp}`;
+  const worktreePath = `/tmp/whatsapp-bot-${branchName}`;
+
+  try {
+    git(['worktree', 'add', '-b', branchName, worktreePath, 'HEAD']);
+  } catch (err) {
+    logger.error(`/dev: failed to create worktree: ${err.message}`);
+    await ctx.reply(`Failed to create git worktree: ${err.message}`);
+    return false;
+  }
+
+  const sessionNotes = loadSessionNotes();
+  const context = { sessionNotes, history: completedSteps };
+
+  await ctx.reply('Analyzing...');
+
+  let isAnswer, cleanResponse;
+  try {
+    ({ isAnswer, cleanResponse } = await runPlanning(instruction, worktreePath, context, ctx.reply.bind(ctx)));
+  } catch (err) {
+    logger.error(`/dev: analysis failed: ${err.message}`);
+    cleanupWorktree({ worktreePath, branchName });
+    await ctx.reply(`Analysis failed: ${err.message}`);
+    return false;
+  }
+
+  if (isAnswer) {
+    cleanupWorktree({ worktreePath, branchName });
+    await ctx.reply(cleanResponse);
+    return 'answer';
+  }
+
+  ctx.updateTask('awaiting_plan_confirmation', { instruction, plan: cleanResponse, worktreePath, branchName, completedSteps });
+  await ctx.reply(
+    `*Plan:*\n\n${cleanResponse}\n\n` +
+    `Reply:\n` +
+    `• \`confirm\` — proceed with this plan\n` +
+    `• \`update: <feedback>\` — revise the plan\n` +
+    `• \`discard\` — cancel`
+  );
+  return 'plan';
 }
 
 // ─── Task definition ──────────────────────────────────────────────────────────
@@ -309,62 +449,52 @@ const devTask = {
         'Questions (answered immediately):\n' +
         '  /dev how does the market scheduler work?\n' +
         '  /dev why does /research fall back to FMP?\n\n' +
-        'Build tasks (plan → confirm → implement):\n' +
-        '  /dev add a /weather command using wttr.in'
+        'Build tasks (plan → confirm → implement → continue):\n' +
+        '  /dev add a /weather command using wttr.in\n\n' +
+        'Session context (persists across /dev calls until cleared):\n' +
+        '  /dev session: <notes>  — set working context\n' +
+        '  /dev session show      — show current notes\n' +
+        '  /dev session clear     — clear notes'
       );
       ctx.completeTask();
       return;
     }
 
-    const timestamp = Date.now();
-    const branchName = `dev-${timestamp}`;
-    const worktreePath = `/tmp/whatsapp-bot-${branchName}`;
+    // ── Session subcommands ────────────────────────────────────────────────────
+    const firstWord = args[0].toLowerCase();
+    if (firstWord === 'session' || firstWord === 'session:') {
+      const rest = args.slice(1).join(' ').replace(/^:\s*/, '').trim();
 
-    try {
-      git(['worktree', 'add', '-b', branchName, worktreePath, 'HEAD']);
-    } catch (err) {
-      logger.error(`/dev: failed to create worktree: ${err.message}`);
-      await ctx.reply(`❌ Failed to create git worktree: ${err.message}`);
+      if (!rest || rest === 'show') {
+        const notes = loadSessionNotes();
+        await ctx.reply(notes
+          ? `Current session notes:\n\n${notes}`
+          : 'No session notes set. Use `/dev session: <notes>` to set context.'
+        );
+        ctx.completeTask();
+        return;
+      }
+
+      if (rest === 'clear') {
+        clearSessionNotes();
+        await ctx.reply('Session notes cleared.');
+        ctx.completeTask();
+        return;
+      }
+
+      // Treat everything else as the new notes content
+      saveSessionNotes(rest);
+      await ctx.reply(`Session notes saved:\n\n${rest}`);
       ctx.completeTask();
       return;
     }
 
-    await ctx.reply('🔍 Analyzing...');
-
-    let response;
-    try {
-      response = await runPlanningPhase(instruction, worktreePath, null, async () => {
-        await ctx.reply('Still analyzing...');
-      });
-    } catch (err) {
-      logger.error(`/dev: analysis failed: ${err.message}`);
-      cleanupWorktree({ worktreePath, branchName });
-      await ctx.reply(`❌ Analysis failed: ${err.message}`);
+    // ── Normal /dev instruction ────────────────────────────────────────────────
+    const result = await startIteration(ctx, instruction, []);
+    if (result === 'answer' || result === false) {
       ctx.completeTask();
-      return;
     }
-
-    // Detect intent from self-classification marker
-    const isAnswer = response.includes('[ANSWER]');
-    const cleanResponse = response.replace(/\[(ANSWER|PLAN)\]\s*$/i, '').trim();
-
-    if (isAnswer) {
-      // Q&A — answer immediately, no confirmation loop needed
-      cleanupWorktree({ worktreePath, branchName });
-      await ctx.reply(cleanResponse);
-      ctx.completeTask();
-      return;
-    }
-
-    // Build task — show plan and wait for confirmation
-    ctx.updateTask('awaiting_plan_confirmation', { instruction, plan: cleanResponse, worktreePath, branchName });
-    await ctx.reply(
-      `📋 *Plan:*\n\n${cleanResponse}\n\n` +
-      `Reply:\n` +
-      `• \`confirm\` — proceed with this plan\n` +
-      `• \`update: <feedback>\` — revise the plan\n` +
-      `• \`discard\` — cancel`
-    );
+    // If 'plan', task stays alive in awaiting_plan_confirmation
   },
 
   async onMessage(ctx, text) {
@@ -372,40 +502,43 @@ const devTask = {
     const data = ctx.getTaskData() ?? {};
     const cmd = text.trim().toLowerCase();
 
-    // ── Phase 1 confirmation ─────────────────────────────────────────────────
+    // ── Phase 1 confirmation ──────────────────────────────────────────────────
     if (taskState === 'awaiting_plan_confirmation') {
-      const { instruction, plan, worktreePath, branchName } = data;
+      const { instruction, plan, worktreePath, branchName, completedSteps = [] } = data;
 
       if (cmd === 'confirm') {
-        await executeImplementation(ctx, { instruction, plan, worktreePath, branchName });
+        await executeImplementation(ctx, { instruction, plan, worktreePath, branchName, completedSteps });
         return;
       }
 
       if (cmd === 'discard') {
         cleanupWorktree({ worktreePath, branchName });
-        await ctx.reply('Cancelled. No changes applied.');
-        ctx.completeTask();
+        if (completedSteps.length > 0) {
+          ctx.updateTask('awaiting_followup', { completedSteps });
+          await ctx.reply('Discarded. Reply with another instruction or `done` to finish.');
+        } else {
+          await ctx.reply('Cancelled. No changes applied.');
+          ctx.completeTask();
+        }
         return;
       }
 
-      // update: <feedback>
       const feedbackMatch = text.match(/^update[:\s]+(.+)/si);
       if (feedbackMatch) {
         const feedback = feedbackMatch[1].trim();
-        await ctx.reply('🔍 Revising...');
+        await ctx.reply('Revising...');
+        const sessionNotes = loadSessionNotes();
         let revisedPlan;
         try {
-          revisedPlan = await runPlanningPhase(instruction, worktreePath, feedback, async () => {
-            await ctx.reply('Still analyzing...');
-          });
+          ({ cleanResponse: revisedPlan } = await runPlanning(instruction, worktreePath, { sessionNotes, feedback, history: completedSteps }, ctx.reply.bind(ctx)));
         } catch (err) {
           logger.error(`/dev: plan revision failed: ${err.message}`);
-          await ctx.reply(`❌ Plan revision failed: ${err.message}\n\nPrevious plan still active. Reply \`confirm\`, \`update: <feedback>\`, or \`discard\`.`);
+          await ctx.reply(`Plan revision failed: ${err.message}\n\nPrevious plan still active. Reply \`confirm\`, \`update: <feedback>\`, or \`discard\`.`);
           return;
         }
         ctx.updateTask('awaiting_plan_confirmation', { ...data, plan: revisedPlan });
         await ctx.reply(
-          `📋 *Revised plan:*\n\n${revisedPlan}\n\n` +
+          `*Revised plan:*\n\n${revisedPlan}\n\n` +
           `Reply \`confirm\`, \`update: <feedback>\`, or \`discard\`.`
         );
         return;
@@ -420,9 +553,9 @@ const devTask = {
       return;
     }
 
-    // ── Phase 2 confirmation (apply diff) ────────────────────────────────────
+    // ── Phase 2 confirmation (apply diff) ─────────────────────────────────────
     if (taskState === 'awaiting_confirmation') {
-      const { worktreePath, branchName } = data;
+      const { worktreePath, branchName, instruction, completedSteps = [] } = data;
 
       if (cmd === 'confirm') {
         try {
@@ -430,7 +563,7 @@ const devTask = {
         } catch (err) {
           logger.error(`/dev: merge failed: ${err.message}`);
           await ctx.reply(
-            `❌ Merge failed: ${err.message}\n\n` +
+            `Merge failed: ${err.message}\n\n` +
             `Worktree preserved at ${worktreePath} for manual inspection.\n` +
             `Branch: ${branchName}`
           );
@@ -438,19 +571,60 @@ const devTask = {
           return;
         }
         cleanupWorktree({ worktreePath, branchName });
-        await ctx.reply('✅ Changes applied and committed.\nBot restarting (nodemon detects file changes)...');
-        ctx.completeTask();
+
+        const newHistory = [...completedSteps, instruction];
+        ctx.updateTask('awaiting_followup', { completedSteps: newHistory });
+        await ctx.reply(
+          `Changes applied. Bot restarting (nodemon detects file changes)...\n\n` +
+          `Session history (${newHistory.length} step${newHistory.length !== 1 ? 's' : ''}):\n` +
+          newHistory.map((s, i) => `${i + 1}. ${s}`).join('\n') +
+          `\n\nSend next instruction to continue, or \`done\` to end the session.`
+        );
         return;
       }
 
       if (cmd === 'discard') {
         cleanupWorktree({ worktreePath, branchName });
-        await ctx.reply('Cancelled. No changes applied.');
-        ctx.completeTask();
+        if (completedSteps.length > 0) {
+          ctx.updateTask('awaiting_followup', { completedSteps });
+          await ctx.reply('Discarded. Reply with another instruction or `done` to finish.');
+        } else {
+          await ctx.reply('Cancelled. No changes applied.');
+          ctx.completeTask();
+        }
         return;
       }
 
       await ctx.reply('Reply `confirm` to apply the changes, or `discard` to cancel.');
+      return;
+    }
+
+    // ── In-session continuation ───────────────────────────────────────────────
+    if (taskState === 'awaiting_followup') {
+      const { completedSteps = [] } = data;
+
+      if (cmd === 'done') {
+        await ctx.reply(
+          `Session ended. ${completedSteps.length} step${completedSteps.length !== 1 ? 's' : ''} completed:\n` +
+          completedSteps.map((s, i) => `${i + 1}. ${s}`).join('\n')
+        );
+        ctx.completeTask();
+        return;
+      }
+
+      // Any other text is the next instruction
+      const instruction = text.trim();
+      const result = await startIteration(ctx, instruction, completedSteps);
+      if (result === false) {
+        // Stay in awaiting_followup on error so the session isn't lost
+        ctx.updateTask('awaiting_followup', { completedSteps });
+        await ctx.reply('Reply with another instruction or `done` to finish.');
+      }
+      // If 'answer' or 'plan', startIteration already set the right state
+      if (result === 'answer') {
+        ctx.updateTask('awaiting_followup', { completedSteps });
+        await ctx.reply('Reply with another instruction or `done` to finish.');
+      }
       return;
     }
 
